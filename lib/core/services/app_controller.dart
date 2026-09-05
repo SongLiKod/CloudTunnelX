@@ -91,6 +91,8 @@ class AppController extends ChangeNotifier {
     // 1. 读取账号元数据；2. 若为空且存在历史单 Token，迁移为「默认账号」；
     // 3. 将默认账号 Token 绑定到主 cf 实例（供隧道 DNS 自动路由等使用）
     _loadCfAccounts();
+    // 定时启停：每分钟自动检查各隧道生效时段（需求：按时间段启停）
+    Timer.periodic(const Duration(minutes: 1), (_) => _applySchedules());
     // 应用自身版本更新：读取当前版本并静默检查一次 GitHub Release
     updater.addListener(notifyListeners);
     unawaited(updater.init());
@@ -259,7 +261,18 @@ class AppController extends ChangeNotifier {
   }
 
   void _syncForegroundService() {
-    updateForegroundService(tunnels.runningCount);
+    // 统计断线重连/异常的隧道数量，供前台服务通知文案展示（需求：断线要能感知）
+    var disconnected = 0;
+    for (final c in tunnels.all) {
+      final st = tunnels.statusOf(c.id);
+      if (st == TunnelStatus.reconnecting || st == TunnelStatus.error) {
+        disconnected++;
+      }
+    }
+    updateForegroundService(
+      tunnels.runningCount,
+      disconnectedCount: disconnected,
+    );
   }
 
   void _onTaskData(Object data) {
@@ -288,6 +301,40 @@ class AppController extends ChangeNotifier {
             level: LogLevel.info,
             message: '开机自启：正在恢复隧道 ${c.name}');
         await tunnels.start(c);
+      }
+    }
+    // 立即执行一次定时计划校验：处于生效时段外的隧道即使配置了自恢复也不启动
+    _applySchedules();
+  }
+
+  /// 定时启停校验：在生效时段且星期匹配的隧道自动启动，否则自动停止。
+  /// 每分钟由调度器触发；启动恢复后也执行一次，保证配置/导入后立即生效。
+  void _applySchedules() {
+    final now = DateTime.now();
+    for (final c in tunnels.all) {
+      final s = c.schedule;
+      if (s == null || !s.enabled || c.mode == TunnelMode.quick) continue;
+      final inWindow = s.activeOn(now.weekday) && s.withinTime(now.hour, now.minute);
+      final st = tunnels.statusOf(c.id);
+      final active = st == TunnelStatus.running ||
+          st == TunnelStatus.starting ||
+          st == TunnelStatus.reconnecting;
+      if (inWindow && !active) {
+        logs.log(
+            tunnelId: c.id,
+            tunnelName: c.name,
+            protocol: c.protocol,
+            level: LogLevel.info,
+            message: '定时计划：已到生效时段 ${s.label}，自动启动隧道');
+        unawaited(tunnels.start(c));
+      } else if (!inWindow && active) {
+        logs.log(
+            tunnelId: c.id,
+            tunnelName: c.name,
+            protocol: c.protocol,
+            level: LogLevel.info,
+            message: '定时计划：已过生效时段 ${s.label}，自动停止隧道');
+        unawaited(tunnels.stop(c.id));
       }
     }
   }
@@ -339,6 +386,8 @@ class AppController extends ChangeNotifier {
     bool tokenMode = false,
     bool autoRestore = false,
     bool skipDnsCheck = false,
+    String? accountId,
+    TunSchedule? schedule,
   }) async {
     final c = TunnelConfig(
       id: _newId(),
@@ -349,6 +398,8 @@ class AppController extends ChangeNotifier {
       localPort: localPort,
       subdomain: subdomain?.trim(),
       tunnelToken: tokenMode ? token?.trim() : null,
+      accountId: accountId,
+      schedule: schedule,
       autoRestore: autoRestore,
     );
 
@@ -356,19 +407,22 @@ class AppController extends ChangeNotifier {
     if (vr.hasBlocking) return (null, vr);
 
     if (!tokenMode) {
-      // DNS 托管校验（需求 3.5）
+      // DNS 托管校验（需求 3.5）：优先用所属账号的 CF API Token 校验
       final sd = (subdomain ?? '').trim();
       if (!skipDnsCheck && sd.isNotEmpty) {
         // 取最后两段作为根域名（如 sub.app.example.com → example.com）
         final root = ValidationService.rootDomainOf(sd);
         bool managed = false;
         var apiOk = false;
-        // 优先用已配置的 CF API Token 校验：不受公网 DoH 可达性影响，结果更可靠
-        if (cf.configured) {
+        // 优先用 API Token 校验：不受公网 DoH 可达性影响，结果更可靠
+        if (cf.configured || accountId != null) {
           try {
-            final zones = await cf.listZones();
-            managed = bestZoneFor(root, zones) != null;
-            apiOk = true; // API 查询成功，以 API 结论为准
+            final svc = accountId == null ? cf : await serviceFor(accountId);
+            if (svc.configured) {
+              final zones = await svc.listZones();
+              managed = bestZoneFor(root, zones) != null;
+              apiOk = true; // API 查询成功，以 API 结论为准
+            }
           } catch (_) {
             // API 不可用，继续走 DoH 兜底
           }
@@ -397,7 +451,7 @@ class AppController extends ChangeNotifier {
         if (sd.isNotEmpty) {
           // 优先通过 Cloudflare API 创建 CNAME 路由（无需网页端操作），
           // 未配置 API Token 时回退到 cloudflared tunnel route dns 命令
-          final apiOk = await _routeDnsViaApi(sd, uuid);
+          final apiOk = await _routeDnsViaApi(sd, uuid, accountId);
           if (!apiOk) {
             await tunnels.routeDns(uuid, sd);
           }
@@ -435,16 +489,23 @@ class AppController extends ChangeNotifier {
 
   /// 通过 Cloudflare API 创建/更新 DNS CNAME 路由，把 `subdomain` 指向隧道
   /// 返回 true 表示 API 已处理；false 表示需回退到 cloudflared 命令行方式
-  Future<bool> _routeDnsViaApi(String subdomain, String tunnelUuid) async {
-    if (!cf.configured) return false;
+  Future<bool> _routeDnsViaApi(String subdomain, String tunnelUuid,
+      [String? accountId]) async {
+    final CloudflareService svc;
     try {
-      final zones = await cf.listZones();
+      svc = accountId == null ? cf : await serviceFor(accountId);
+    } catch (_) {
+      return false;
+    }
+    if (!svc.configured) return false;
+    try {
+      final zones = await svc.listZones();
       final zone = bestZoneFor(subdomain, zones);
       if (zone == null) return false;
 
       final target = '$tunnelUuid.cfargotunnel.com';
       // 检查是否已存在同名 CNAME，存在则更新，否则创建
-      final existing = await cf.listDnsRecords(zone.id, type: 'CNAME');
+      final existing = await svc.listDnsRecords(zone.id, type: 'CNAME');
       CfDnsRecord? hit;
       for (final r in existing) {
         if (r.name.toLowerCase() == subdomain.toLowerCase()) {
@@ -453,14 +514,14 @@ class AppController extends ChangeNotifier {
         }
       }
       if (hit != null) {
-        await cf.updateDnsRecord(
+        await svc.updateDnsRecord(
           zoneId: zone.id,
           recordId: hit.id,
           content: target,
           proxied: true,
         );
       } else {
-        await cf.createDnsRecord(
+        await svc.createDnsRecord(
           zoneId: zone.id,
           type: 'CNAME',
           name: subdomain,
@@ -481,11 +542,23 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> updateTunnel(TunnelConfig c,
-      {String? name, String? localHost, int? localPort, bool? autoRestore}) async {
+      {String? name,
+      String? localHost,
+      int? localPort,
+      bool? autoRestore,
+      String? accountId,
+      TunSchedule? schedule}) async {
     final updated = c.copyWith(
-        name: name, localHost: localHost, localPort: localPort, autoRestore: autoRestore);
+        name: name,
+        localHost: localHost,
+        localPort: localPort,
+        autoRestore: autoRestore,
+        accountId: accountId,
+        schedule: schedule);
     await repo.saveTunnel(updated);
     tunnels.registerConfig(updated);
+    // 保存后立即校验一次定时计划，改动即时生效
+    _applySchedules();
   }
 
   Future<void> deleteTunnel(TunnelConfig c) async {
@@ -495,18 +568,25 @@ class AppController extends ChangeNotifier {
     await repo.deleteTunnel(c.id);
   }
 
-  /// 删除隧道对应的 DNS CNAME 记录（仅在已配置 API Token 时可执行）
+  /// 删除隧道对应的 DNS CNAME 记录（已在所属账号配置 API Token 时可执行）
   Future<void> _cleanupTunnelDns(TunnelConfig c) async {
     final sd = (c.subdomain ?? '').trim();
-    if (sd.isEmpty || !cf.configured || c.isNamedTokenMode) return;
+    if (sd.isEmpty || c.isNamedTokenMode) return;
+    final CloudflareService svc;
     try {
-      final zones = await cf.listZones();
+      svc = c.accountId == null ? cf : await serviceFor(c.accountId!);
+    } catch (_) {
+      return;
+    }
+    if (!svc.configured) return;
+    try {
+      final zones = await svc.listZones();
       final zone = bestZoneFor(sd, zones);
       if (zone == null) return;
-      final records = await cf.listDnsRecords(zone.id, type: 'CNAME');
+      final records = await svc.listDnsRecords(zone.id, type: 'CNAME');
       for (final r in records) {
         if (r.name == sd && r.content == '$sd.cfargotunnel.com') {
-          await cf.deleteDnsRecord(zone.id, r.id);
+          await svc.deleteDnsRecord(zone.id, r.id);
           logs.log(
               tunnelId: c.id,
               tunnelName: c.name,
@@ -543,10 +623,16 @@ class AppController extends ChangeNotifier {
   Future<void> stopAll() => tunnels.stopAll();
 
   /// 通过 Cloudflare API 查询隧道当前边缘连接数（需求：连接状态可视化）
-  Future<int?> tunnelConnections(String uuid) async {
-    if (!cf.configured) return null;
+  Future<int?> tunnelConnections(String uuid, {String? accountId}) async {
+    final CloudflareService svc;
     try {
-      final list = await cf.listTunnels(uuid: uuid);
+      svc = accountId == null ? cf : await serviceFor(accountId);
+    } catch (_) {
+      return null;
+    }
+    if (!svc.configured) return null;
+    try {
+      final list = await svc.listTunnels(uuid: uuid);
       if (list.isEmpty) return 0;
       return list.first.connections;
     } catch (e) {

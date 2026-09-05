@@ -51,8 +51,6 @@ class _AppShellState extends State<AppShell> {
     final header = Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
       child: Row(children: [
-        Icon(Icons.cloud_rounded, color: Theme.of(context).colorScheme.primary),
-        const SizedBox(width: 10),
         Expanded(
           child: Text(title,
               overflow: TextOverflow.ellipsis,

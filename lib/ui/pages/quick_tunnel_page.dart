@@ -190,6 +190,8 @@ class _QuickTunnelPageState extends State<QuickTunnelPage> {
                         child: SelectableText(url,
                             style: const TextStyle(
                                 fontWeight: FontWeight.w700, fontSize: 15))),
+                    OpenUrlButton(url: url),
+                    QrButton(value: ensureScheme(url)),
                     CopyButton(value: url, tooltip: '复制访问链接'),
                   ]),
                 ),
@@ -208,6 +210,7 @@ class _QuickTunnelPageState extends State<QuickTunnelPage> {
                       Expanded(
                           child: SelectableText(latestRt!.accessHint!,
                               style: const TextStyle(fontFamily: 'Consolas', fontSize: 13))),
+                      QrButton(value: latestRt.accessHint!, tooltip: '接入命令二维码'),
                       CopyButton(value: latestRt.accessHint!, tooltip: '复制接入命令'),
                     ]),
                   ),

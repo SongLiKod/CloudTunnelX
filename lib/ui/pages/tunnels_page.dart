@@ -46,7 +46,7 @@ class TunnelsPage extends StatelessWidget {
   }
 
   void _showCreateDialog(BuildContext context) {
-    showDialog(context: context, builder: (_) => const _TunnelEditDialog());
+    showDialog(context: context, builder: (_) => const TunnelEditDialog());
   }
 }
 
@@ -80,6 +80,10 @@ class _NamedCard extends StatelessWidget {
     final c = config;
     final status = app.tunnels.statusOf(c.id);
     final rt = app.tunnels.runtimeOf(c.id);
+    final url = app.tunnels.publicUrlOf(c.id);
+    final accName =
+        app.cfAccounts.where((a) => a.id == c.accountId).firstOrNull?.name;
+    final sched = c.schedule;
     final isBusy = status == TunnelStatus.running ||
         status == TunnelStatus.starting ||
         status == TunnelStatus.reconnecting;
@@ -104,8 +108,33 @@ class _NamedCard extends StatelessWidget {
             _kv('绑定域名', c.subdomain ?? '（Token 远程管理）'),
             _kv('本地服务', '${c.localHost}:${c.localPort}'),
             _kv('管理方式', c.isNamedTokenMode ? 'Token' : '本地授权'),
+            if (accName != null) _kv('所属账号', accName),
+            if (sched?.enabled == true) _kv('定时启停', sched!.label),
             if (c.autoRestore) _kv('开机恢复', '是'),
           ]),
+          if (url != null && url.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .primaryContainer
+                      .withValues(alpha: 0.4),
+                  borderRadius: BorderRadius.circular(8)),
+              child: Row(children: [
+                Icon(Icons.public_rounded,
+                    size: 16, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                    child: SelectableText(url,
+                        style: const TextStyle(fontWeight: FontWeight.w600))),
+                OpenUrlButton(url: url),
+                QrButton(value: ensureScheme(url)),
+                CopyButton(value: url),
+              ]),
+            ),
+          ],
           if (rt?.accessHint != null) ...[
             const SizedBox(height: 8),
             Text('客户端接入命令（在访问端执行）：',
@@ -122,6 +151,7 @@ class _NamedCard extends StatelessWidget {
                     child: SelectableText(rt!.accessHint!,
                         style: const TextStyle(
                             fontFamily: 'Consolas', fontSize: 12.5))),
+                QrButton(value: rt.accessHint!, tooltip: '接入命令二维码'),
                 CopyButton(value: rt.accessHint!, tooltip: '复制接入命令'),
               ]),
             ),
@@ -144,7 +174,8 @@ class _NamedCard extends StatelessWidget {
             if (c.tunnelUuid != null && app.cf.configured)
               TextButton.icon(
                 onPressed: () async {
-                  final n = await app.tunnelConnections(c.tunnelUuid!);
+                  final n =
+                      await app.tunnelConnections(c.tunnelUuid!, accountId: c.accountId);
                   if (!context.mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                     content: Text(n == null
@@ -208,20 +239,28 @@ class _NamedCard extends StatelessWidget {
       ]);
 
   void _showEditDialog(BuildContext context, TunnelConfig c) {
-    showDialog(context: context, builder: (_) => _TunnelEditDialog(existing: c));
+    showDialog(context: context, builder: (_) => TunnelEditDialog(existing: c));
   }
 }
 
-/// 创建 / 修改 隧道弹窗
-class _TunnelEditDialog extends StatefulWidget {
+/// 创建 / 修改 隧道弹窗（域名页「在此域名下创建固定隧道」可预填子域名与账号）
+class TunnelEditDialog extends StatefulWidget {
   final TunnelConfig? existing;
-  const _TunnelEditDialog({this.existing});
+
+  /// 预填绑定子域名（如 example.com，用户补前缀）
+  final String? initialSubdomain;
+
+  /// 预填所属 Cloudflare 账号 id
+  final String? initialAccountId;
+
+  const TunnelEditDialog(
+      {super.key, this.existing, this.initialSubdomain, this.initialAccountId});
 
   @override
-  State<_TunnelEditDialog> createState() => _TunnelEditDialogState();
+  State<TunnelEditDialog> createState() => _TunnelEditDialogState();
 }
 
-class _TunnelEditDialogState extends State<_TunnelEditDialog> {
+class _TunnelEditDialogState extends State<TunnelEditDialog> {
   late bool _tokenMode = widget.existing?.isNamedTokenMode ?? false;
   late ProtocolType _protocol = widget.existing?.protocol ?? ProtocolType.http;
   late final _nameCtrl = TextEditingController(text: widget.existing?.name ?? '');
@@ -229,11 +268,18 @@ class _TunnelEditDialogState extends State<_TunnelEditDialog> {
       TextEditingController(text: widget.existing?.localHost ?? '127.0.0.1');
   late final _portCtrl = TextEditingController(
       text: widget.existing?.localPort.toString() ?? '8080');
-  late final _subCtrl =
-      TextEditingController(text: widget.existing?.subdomain ?? '');
+  late final _subCtrl = TextEditingController(
+      text: widget.existing?.subdomain ?? widget.initialSubdomain ?? '');
   late final _tokenCtrl =
       TextEditingController(text: widget.existing?.tunnelToken ?? '');
   late bool _autoRestore = widget.existing?.autoRestore ?? true;
+  late String? _accountId = widget.existing?.accountId ?? widget.initialAccountId;
+  late bool _scheduleEnabled = widget.existing?.schedule?.enabled ?? false;
+  late String _scheduleStart = widget.existing?.schedule?.start ?? '09:00';
+  late String _scheduleEnd = widget.existing?.schedule?.end ?? '18:00';
+  late final Set<int> _scheduleDays = {
+    ...(widget.existing?.schedule?.weekdays ?? const [1, 2, 3, 4, 5])
+  };
   bool _skipDnsCheck = false;
   bool _creating = false;
   String? _stepText;
@@ -249,6 +295,74 @@ class _TunnelEditDialogState extends State<_TunnelEditDialog> {
     super.dispose();
   }
 
+  /// 解析当前归属账号：未选或账号已删除时回落到首个账号；无任何账号返回 null
+  String? _pickAccountId() {
+    final accounts = context.read<AppController>().cfAccounts;
+    if (accounts.isEmpty) return null;
+    if (_accountId != null && accounts.any((a) => a.id == _accountId)) {
+      return _accountId;
+    }
+    return accounts.first.id;
+  }
+
+  /// 组装定时计划（关闭定时时保留时段设置但标记 disabled）
+  TunSchedule _schedule() => TunSchedule(
+        enabled: _scheduleEnabled,
+        start: _scheduleStart,
+        end: _scheduleEnd,
+        weekdays: _scheduleDays.isEmpty
+            ? const []
+            : _scheduleDays.toList()
+                  ..sort(),
+      );
+
+  /// 所属账号下拉（未配置任何账号时隐藏）
+  Widget _accountPicker(AppController app) {
+    final accounts = app.cfAccounts;
+    if (accounts.isEmpty) return const SizedBox.shrink();
+    return DropdownButtonFormField<String>(
+      initialValue: _pickAccountId(),
+      decoration: const InputDecoration(
+          labelText: '所属 Cloudflare 账号',
+          prefixIcon: Icon(Icons.account_circle_rounded),
+          helperText: '该隧道的 DNS 校验与 CNAME 路由将落在所选账号下'),
+      items: accounts
+          .map((a) =>
+              DropdownMenuItem(value: a.id, child: Text(a.name)))
+          .toList(),
+      onChanged: (v) => setState(() => _accountId = v),
+    );
+  }
+
+  /// 时间选择字段（点击弹出 TimePicker）
+  Widget _timeField(String label, String value, ValueChanged<String> onPick) {
+    final p = value.split(':');
+    return InkWell(
+      onTap: () async {
+        final t = await showTimePicker(
+          context: context,
+          initialTime: TimeOfDay(
+              hour: int.tryParse(p[0]) ?? 9, minute: int.tryParse(p[1]) ?? 0),
+        );
+        if (t != null) {
+          onPick(
+              '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}');
+        }
+      },
+      borderRadius: BorderRadius.circular(8),
+      child: InputDecorator(
+        decoration: InputDecoration(
+          labelText: label,
+          prefixIcon: const Icon(Icons.schedule_rounded),
+          suffixIcon: const Icon(Icons.expand_more_rounded),
+        ),
+        child: Text(value,
+            style: const TextStyle(
+                fontSize: 16, fontWeight: FontWeight.w600)),
+      ),
+    );
+  }
+
   Future<void> _submit() async {
     final app = context.read<AppController>();
     final port = int.tryParse(_portCtrl.text.trim());
@@ -256,6 +370,8 @@ class _TunnelEditDialogState extends State<_TunnelEditDialog> {
       setState(() => _issues = [const ValidationIssue('端口必须为数字（1~65535）')]);
       return;
     }
+    final accountId = _pickAccountId();
+    final schedule = _schedule();
 
     // 修改模式
     final ex = widget.existing;
@@ -264,7 +380,9 @@ class _TunnelEditDialogState extends State<_TunnelEditDialog> {
           name: _nameCtrl.text.trim(),
           localHost: _hostCtrl.text.trim(),
           localPort: port,
-          autoRestore: _autoRestore);
+          autoRestore: _autoRestore,
+          accountId: accountId,
+          schedule: schedule);
       if (mounted) Navigator.pop(context);
       return;
     }
@@ -285,6 +403,8 @@ class _TunnelEditDialogState extends State<_TunnelEditDialog> {
       tokenMode: _tokenMode,
       autoRestore: _autoRestore,
       skipDnsCheck: _skipDnsCheck,
+      accountId: accountId,
+      schedule: schedule,
     );
     if (!mounted) return;
     if (created == null) {
@@ -301,6 +421,7 @@ class _TunnelEditDialogState extends State<_TunnelEditDialog> {
   @override
   Widget build(BuildContext context) {
     final isNew = widget.existing == null;
+    final app = context.watch<AppController>();
     return AlertDialog(
       title: Text(isNew ? '创建固定隧道' : '修改隧道配置'),
       content: SizedBox(
@@ -338,6 +459,8 @@ class _TunnelEditDialogState extends State<_TunnelEditDialog> {
               onChanged: isNew ? (v) => setState(() => _protocol = v!) : null,
             ),
             const SizedBox(height: 10),
+            if (!_tokenMode) _accountPicker(app),
+            if (!_tokenMode) const SizedBox(height: 10),
             Row(children: [
               Expanded(
                 flex: 3,
@@ -391,6 +514,51 @@ class _TunnelEditDialogState extends State<_TunnelEditDialog> {
               value: _autoRestore,
               onChanged: (v) => setState(() => _autoRestore = v),
             ),
+            const Divider(height: 20),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('定时启停', style: TextStyle(fontSize: 14)),
+              subtitle: const Text('按时间段自动启动/停止，适合办公时段（如工作日 09:00-18:00）',
+                  style: TextStyle(fontSize: 12)),
+              value: _scheduleEnabled,
+              onChanged: (v) => setState(() => _scheduleEnabled = v),
+            ),
+            if (_scheduleEnabled) ...[
+              const SizedBox(height: 4),
+              Row(children: [
+                Expanded(
+                    child: _timeField(
+                        '开始时间', _scheduleStart,
+                        (v) => setState(() => _scheduleStart = v))),
+                const SizedBox(width: 10),
+                Expanded(
+                    child: _timeField(
+                        '结束时间', _scheduleEnd,
+                        (v) => setState(() => _scheduleEnd = v))),
+              ]),
+              const SizedBox(height: 8),
+              Wrap(spacing: 6, runSpacing: 6, children: [
+                for (var d = 1; d <= 7; d++)
+                  FilterChip(
+                    label: Text('周${'一二三四五六日'[d - 1]}'),
+                    selected: _scheduleDays.contains(d),
+                    onSelected: (sel) => setState(() {
+                      if (sel) {
+                        _scheduleDays.add(d);
+                      } else {
+                        _scheduleDays.remove(d);
+                      }
+                      if (_scheduleDays.isEmpty) _scheduleEnabled = false;
+                    }),
+                  ),
+              ]),
+              const SizedBox(height: 4),
+              Text('跨天时段（如 22:00-06:00）与所选星期均生效',
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: Colors.grey)),
+            ],
             for (final i in _issues)
               Container(
                 margin: const EdgeInsets.only(top: 6),

@@ -5,6 +5,7 @@ import '../../core/models/cf_account.dart';
 import '../../core/models/cloudflare.dart';
 import '../../core/services/app_controller.dart';
 import '../../core/services/cloudflare_service.dart';
+import 'tunnels_page.dart';
 
 /// 域名管理（替代 Cloudflare 网页端操作）：
 /// 支持多 Cloudflare 账号（每个 Token 一个显示名称），
@@ -99,6 +100,7 @@ class _DomainsPageState extends State<DomainsPage> {
                   onRemove: () => _confirmRemoveAccount(app, acc),
                   onExpandZone: (z) => _loadRecords(acc, z),
                   onCreateRecord: (z) => _showCreateRecord(acc, z),
+                  onCreateTunnel: (z) => _createTunnelUnderZone(acc, z),
                   onDeleteRecord: (z, r) => _deleteRecord(acc, z, r),
                 )),
           ],
@@ -208,6 +210,17 @@ class _DomainsPageState extends State<DomainsPage> {
             ));
   }
 
+  /// 「在此域名下创建固定隧道」：打开隧道创建弹窗并预填根域名与所属账号
+  /// （DNS 校验与 CNAME 路由自动落到该账号的 zone，打通两页面）
+  void _createTunnelUnderZone(CfAccount account, CfZone z) {
+    showDialog(
+        context: context,
+        builder: (_) => TunnelEditDialog(
+              initialSubdomain: z.name,
+              initialAccountId: account.id,
+            ));
+  }
+
   void _showAddAccount(AppController app) {
     showDialog(
         context: context,
@@ -269,6 +282,7 @@ class _AccountCard extends StatelessWidget {
   final VoidCallback onRemove;
   final void Function(CfZone) onExpandZone;
   final void Function(CfZone) onCreateRecord;
+  final void Function(CfZone) onCreateTunnel;
   final void Function(CfZone, CfDnsRecord) onDeleteRecord;
 
   const _AccountCard({
@@ -283,6 +297,7 @@ class _AccountCard extends StatelessWidget {
     required this.onRemove,
     required this.onExpandZone,
     required this.onCreateRecord,
+    required this.onCreateTunnel,
     required this.onDeleteRecord,
   });
 
@@ -368,6 +383,7 @@ class _AccountCard extends StatelessWidget {
                     loading: loadingZoneId == z.id,
                     onExpand: () => onExpandZone(z),
                     onCreateRecord: () => onCreateRecord(z),
+                    onCreateTunnel: () => onCreateTunnel(z),
                     onDeleteRecord: (r) => onDeleteRecord(z, r),
                   )),
             ]),
@@ -584,6 +600,9 @@ class _ZoneCard extends StatefulWidget {
   final bool loading;
   final VoidCallback onExpand;
   final VoidCallback onCreateRecord;
+
+  /// 「在此域名下创建固定隧道」入口
+  final VoidCallback onCreateTunnel;
   final void Function(CfDnsRecord) onDeleteRecord;
 
   const _ZoneCard({
@@ -592,6 +611,7 @@ class _ZoneCard extends StatefulWidget {
     required this.loading,
     required this.onExpand,
     required this.onCreateRecord,
+    required this.onCreateTunnel,
     required this.onDeleteRecord,
   });
 
@@ -636,9 +656,15 @@ class _ZoneCardState extends State<_ZoneCard> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(children: [
-                    Text('DNS 记录（${widget.records.length}）',
-                        style: Theme.of(context).textTheme.titleSmall),
-                    const Spacer(),
+                    Expanded(
+                        child: Text('DNS 记录（${widget.records.length}）',
+                            style: Theme.of(context).textTheme.titleSmall)),
+                    TextButton.icon(
+                      onPressed: widget.onCreateTunnel,
+                      icon: const Icon(Icons.add_link_rounded, size: 16),
+                      label: const Text('在此域名下创建隧道'),
+                    ),
+                    const SizedBox(width: 4),
                     TextButton.icon(
                       onPressed: widget.onCreateRecord,
                       icon: const Icon(Icons.add_rounded, size: 16),
