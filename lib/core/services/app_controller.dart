@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../models/cf_account.dart';
 import '../models/cloudflare.dart';
 import '../models/log_entry.dart';
 import '../models/protocol_type.dart';
@@ -42,10 +43,24 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 历史单 Token 存储键（迁移为默认账号前使用）
   static const _cfTokenKey = 'cf_api_token';
+
+  /// 多账号元数据存储键（JSON：[{id, name}]）
+  static const _accountsKey = 'cf_accounts';
+
+  /// 账号的 Token 加密存储键前缀
+  static String _tokenKeyFor(String accountId) => 'cf_token_$accountId';
 
   /// 安全存储（Windows DPAPI / Android Keystore 加密），用于存放 API Token
   static const _secureStorage = FlutterSecureStorage();
+
+  /// Cloudflare 多账号列表（首项为默认账号，主 cf 实例绑定其 Token）
+  List<CfAccount> _accounts = [];
+  List<CfAccount> get cfAccounts => List.unmodifiable(_accounts);
+
+  /// 按账号缓存独立的 CloudflareService 实例（各自缓存账户 ID）
+  final Map<String, CloudflareService> _cfServices = {};
 
   bool _bootRestored = false;
 
@@ -72,8 +87,10 @@ class AppController extends ChangeNotifier {
       _themeMode = ThemeMode.values.firstWhere((e) => e.name == savedTheme,
           orElse: () => ThemeMode.system);
     }
-    // 从安全存储恢复 Cloudflare API Token（异步，完成后自动迁移旧明文）
-    _loadCfToken();
+    // 启动时恢复 Cloudflare 多账号：
+    // 1. 读取账号元数据；2. 若为空且存在历史单 Token，迁移为「默认账号」；
+    // 3. 将默认账号 Token 绑定到主 cf 实例（供隧道 DNS 自动路由等使用）
+    _loadCfAccounts();
     // 应用自身版本更新：读取当前版本并静默检查一次 GitHub Release
     updater.addListener(notifyListeners);
     unawaited(updater.init());
@@ -87,44 +104,158 @@ class AppController extends ChangeNotifier {
   Future<void> upgradeApp() =>
       updater.downloadAndInstall(onExit: () => exit(0));
 
-  /// 从安全存储读取 Token；若安全存储为空但 hive 中存在旧版明文，则迁移过去
-  Future<void> _loadCfToken() async {
+  /// 恢复多账号列表；无账号时迁移历史单 Token 为「默认账号」
+  Future<void> _loadCfAccounts() async {
     try {
-      var token = await _secureStorage.read(key: _cfTokenKey);
-      if ((token == null || token.isEmpty) &&
-          repo.getSetting<String>(_cfTokenKey) != null) {
-        token = repo.getSetting<String>(_cfTokenKey);
-        if (token != null && token.isNotEmpty) {
-          await _secureStorage.write(key: _cfTokenKey, value: token);
+      final saved = repo.getSetting<String>(_accountsKey);
+      if (saved != null && saved.isNotEmpty) {
+        final list = jsonDecode(saved) as List;
+        _accounts = list
+            .map((j) => CfAccount.fromJson(j as Map<String, dynamic>))
+            .toList();
+      }
+      if (_accounts.isEmpty) {
+        // 迁移历史 Token（安全存储优先，其次旧明文）
+        var legacy = await _secureStorage.read(key: _cfTokenKey);
+        if ((legacy == null || legacy.isEmpty) &&
+            repo.getSetting<String>(_cfTokenKey) != null) {
+          legacy = repo.getSetting<String>(_cfTokenKey);
+        }
+        if (legacy != null && legacy.isNotEmpty) {
+          await _secureStorage.write(
+              key: _tokenKeyFor('default'), value: legacy);
           await repo.setSetting(_cfTokenKey, null);
+          _accounts = [CfAccount(id: 'default', name: '默认账号')];
         }
       }
-      if (token != null && token.isNotEmpty) cf.setToken(token);
+      if (_accounts.isNotEmpty) {
+        final t = await _readTokenFor(_accounts.first.id);
+        if (t != null && t.isNotEmpty) cf.setToken(t);
+      }
     } catch (_) {
-      // 安全存储不可用时回退到旧的明文读取，保证功能可用
+      // 安全存储不可用时回退旧明文，保证功能可用
       cf.setToken(repo.getSetting<String>(_cfTokenKey));
     }
   }
 
-  /// 保存并验证 Cloudflare API Token（域名管理所需），Token 加密存入安全存储
+  Future<String?> _readTokenFor(String accountId) async {
+    try {
+      final t = await _secureStorage.read(key: _tokenKeyFor(accountId));
+      if (t != null && t.isNotEmpty) return t;
+    } catch (_) {}
+    // 安全存储不可用时的明文兜底
+    final fallback = repo.getSetting<String>(_tokenKeyFor(accountId));
+    return (fallback != null && fallback.isNotEmpty) ? fallback : null;
+  }
+
+  Future<void> _persistAccounts() =>
+      repo.setSetting(_accountsKey, jsonEncode(_accounts.map((a) => a.toJson()).toList()));
+
+  /// 添加 Cloudflare 账号（保存并验证 Token），成功后自动设为首页账号
+  Future<bool> addCfAccount({required String name, required String token}) async {
+    final t = token.trim();
+    if (t.isEmpty) return false;
+    final id = 'acct_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(0xFFFF)}';
+    final displayName = name.trim().isEmpty ? '账号 ${_accounts.length + 1}' : name.trim();
+    try {
+      await _secureStorage.write(key: _tokenKeyFor(id), value: t);
+      await repo.setSetting(_tokenKeyFor(id), null);
+    } catch (_) {
+      await repo.setSetting(_tokenKeyFor(id), t); // 安全存储不可用时的兜底
+    }
+    final s = CloudflareService()..setToken(t);
+    final ok = await s.verifyToken();
+    if (!ok) {
+      // 校验失败回滚
+      try {
+        await _secureStorage.delete(key: _tokenKeyFor(id));
+      } catch (_) {}
+      await repo.setSetting(_tokenKeyFor(id), null);
+      return false;
+    }
+    _accounts.add(CfAccount(id: id, name: displayName));
+    _cfServices[id] = s;
+    await _persistAccounts();
+    if (_accounts.length == 1) cf.setToken(t);
+    notifyListeners();
+    return true;
+  }
+
+  /// 重命名账号
+  Future<void> renameCfAccount(String id, String name) async {
+    final a = _accounts.where((e) => e.id == id).firstOrNull;
+    if (a == null) return;
+    a.name = name.trim().isEmpty ? a.name : name.trim();
+    await _persistAccounts();
+    notifyListeners();
+  }
+
+  /// 删除账号（连带删除其 Token 与缓存实例）；删除默认账号后自动切换下一个为默认
+  Future<void> removeCfAccount(String id) async {
+    if (_accounts.every((e) => e.id != id)) return;
+    try {
+      await _secureStorage.delete(key: _tokenKeyFor(id));
+    } catch (_) {}
+    await repo.setSetting(_tokenKeyFor(id), null);
+    _cfServices.remove(id);
+    _accounts.removeWhere((e) => e.id == id);
+    await _persistAccounts();
+    // 默认账号变化时重新绑定主 cf
+    if (_accounts.isNotEmpty) {
+      final t = await _readTokenFor(_accounts.first.id);
+      if (t != null && t.isNotEmpty) cf.setToken(t);
+    } else {
+      cf.setToken(null);
+    }
+    notifyListeners();
+  }
+
+  /// 获取某账号对应的 CloudflareService（缓存实例，避免重复获取账户 ID）
+  Future<CloudflareService> serviceFor(String accountId) async {
+    final cached = _cfServices[accountId];
+    if (cached != null) return cached;
+    final account =
+        _accounts.where((e) => e.id == accountId).firstOrNull ?? _accounts.firstOrNull;
+    if (account != null) {
+      final t = await _readTokenFor(account.id);
+      if (t != null && t.isNotEmpty) {
+        final s = CloudflareService()..setToken(t);
+        _cfServices[account.id] = s;
+        return s;
+      }
+    }
+    throw StateError('未配置 Cloudflare API Token');
+  }
+
+  /// 账号 Token 掩码（仅用于展示识别，如 ab12****）
+  Future<String> tokenMaskFor(String accountId) async {
+    final t = await _readTokenFor(accountId);
+    if (t == null || t.isEmpty) return '';
+    if (t.length <= 8) return '****';
+    return '${t.substring(0, 4)}****${t.substring(t.length - 4)}';
+  }
+
+  /// 保存并验证 Cloudflare API Token（现有入口，作用于默认账号：无账号时自动创建）
   Future<bool> saveCfToken(String token) async {
     final t = token.trim();
+    if (_accounts.isEmpty) return addCfAccount(name: '默认账号', token: t);
+    final id = _accounts.first.id;
     try {
-      await _secureStorage.write(key: _cfTokenKey, value: t);
-      await repo.setSetting(_cfTokenKey, null); // 清除历史明文
+      await _secureStorage.write(key: _tokenKeyFor(id), value: t);
+      await repo.setSetting(_tokenKeyFor(id), null);
     } catch (_) {
-      await repo.setSetting(_cfTokenKey, t); // 安全存储不可用时的兜底
+      await repo.setSetting(_tokenKeyFor(id), t); // 安全存储不可用时的兜底
     }
     cf.setToken(t);
     return cf.verifyToken();
   }
 
   Future<void> clearCfToken() async {
-    try {
-      await _secureStorage.delete(key: _cfTokenKey);
-    } catch (_) {}
-    await repo.setSetting(_cfTokenKey, null);
-    cf.setToken(null);
+    if (_accounts.isEmpty) {
+      cf.setToken(null);
+      return;
+    }
+    await removeCfAccount(_accounts.first.id);
   }
 
   void _syncForegroundService() {
