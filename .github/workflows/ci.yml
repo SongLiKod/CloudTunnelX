@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# 允许在同一分支有新提交时取消正在运行的旧工作流
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 代码静态分析 + 单元测试（轻量、Linux 即可）
+  analyze-and-test:
+    name: Analyze & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.2"
+          channel: stable
+          cache: true
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: flutter analyze
+        run: flutter analyze --no-pub --no-fatal-infos
+
+      - name: flutter test
+        run: flutter test --no-pub --reporter expanded
+
+  # Windows 发布包构建
+  build-windows:
+    name: Build Windows
+    needs: analyze-and-test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.2"
+          channel: stable
+          cache: true
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: Build Windows release
+        run: flutter build windows --release --no-pub
+
+      - name: Ensure VC++ runtime DLLs bundled
+        shell: pwsh
+        run: |
+          $out = "build/windows/x64/runner/Release"
+          foreach ($dll in @('msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','vccorlib140.dll')) {
+            if (-not (Test-Path "$out/$dll")) {
+              $src = "C:\Windows\System32\$dll"
+              if (Test-Path $src) {
+                Copy-Item $src $out
+                Write-Host "Copied $dll into release bundle"
+              } else {
+                Write-Host "WARNING: $dll not found in System32"
+              }
+            }
+          }
+          # 关键运行库缺失则直接失败，避免产出无法运行的包
+          foreach ($dll in @('msvcp140.dll','vcruntime140.dll')) {
+            if (-not (Test-Path "$out/$dll")) {
+              Write-Error "Missing required runtime DLL: $dll"
+              exit 1
+            }
+          }
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudtunnelx-windows
+          path: build/windows/x64/runner/Release/
+          if-no-files-found: error
+
+  # Android 发布包构建
+  build-android:
+    name: Build Android
+    needs: analyze-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.2"
+          channel: stable
+          cache: true
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: Build Android release APK
+        run: flutter build apk --release --no-pub
+
+      - name: Build Android release App Bundle
+        run: flutter build appbundle --release --no-pub
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudtunnelx-android
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/bundle/release/app-release.aab
+          if-no-files-found: error

@@ -1,0 +1,395 @@
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../../core/services/app_controller.dart';
+import '../../core/services/autostart_service.dart';
+
+/// 设置页（需求 2.2 / 3.6 / 技术文档 4.2）：内核管理、Cloudflare 授权、开机自启、托盘说明
+class SettingsPage extends StatefulWidget {
+  const SettingsPage({super.key});
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  final _autostart = AutostartService();
+  bool? _autostartOn;
+  bool? _certOk;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final app = context.read<AppController>();
+    _autostartOn = _autostart.supported ? await _autostart.isEnabled() : false;
+    _certOk = await app.binaries.hasLoginCert();
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppController>();
+    final bm = app.binaries;
+    final isAndroid = Platform.isAndroid;
+
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        Text('设置',
+            style: Theme.of(context)
+                .textTheme
+                .headlineSmall
+                ?.copyWith(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 16),
+
+        // ---------- 内核管理 ----------
+        _Section(
+          title: 'cloudflared 内核',
+          icon: Icons.memory_rounded,
+          children: [
+            Row(children: [
+              Icon(
+                bm.ready ? Icons.check_circle_rounded : Icons.cancel_rounded,
+                size: 18,
+                color: bm.ready ? Colors.green.shade300 : Colors.red.shade300,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  bm.ready
+                      ? '内核就绪 · ${bm.version ?? '版本检测中'}\n${bm.binaryPath}'
+                      : '未检测到 cloudflared 内核，请一键下载${isAndroid ? "或从发布页获取 arm64 内核后导入" : ""}',
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+            ]),
+            if (bm.downloading) ...[
+              const SizedBox(height: 10),
+              LinearProgressIndicator(value: bm.progress, minHeight: 5),
+              const SizedBox(height: 4),
+              Text('下载中 ${(bm.progress * 100).toStringAsFixed(0)}%',
+                  style: Theme.of(context).textTheme.bodySmall),
+            ],
+            const SizedBox(height: 12),
+            Wrap(spacing: 10, children: [
+              FilledButton.icon(
+                onPressed: bm.downloading
+                    ? null
+                    : () async {
+                        try {
+                          if (isAndroid) {
+                            final picked = await FilePicker.pickFile();
+                            final path = picked?.path;
+                            if (path != null) await bm.importBinary(path);
+                          } else {
+                            await bm.installLatest();
+                          }
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                content: Text(isAndroid
+                                    ? '内核导入完成'
+                                    : '内核安装完成：${bm.version ?? ''}')));
+                          }
+                        } catch (e) {
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                content: Text('安装失败：$e'),
+                                backgroundColor:
+                                    Theme.of(context).colorScheme.error));
+                          }
+                        }
+                      },
+                icon: const Icon(Icons.download_rounded, size: 18),
+                label: Text(isAndroid ? '导入内核文件' : '一键下载 / 更新内核'),
+              ),
+              FilledButton.tonal(
+                onPressed: () async {
+                  await bm.resolveBinary();
+                },
+                child: const Text('重新检测'),
+              ),
+            ]),
+            if (isAndroid) ...[
+              const SizedBox(height: 8),
+              Text('Android 平台无官方 cloudflared 预编译包，请使用社区 arm64-v8a 构建版内核文件导入。',
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: Colors.orange.shade300)),
+            ],
+          ],
+        ),
+        const SizedBox(height: 14),
+
+        // ---------- Cloudflare 授权 ----------
+        _Section(
+          title: 'Cloudflare 登录授权（固定隧道必需）',
+          icon: Icons.verified_user_rounded,
+          children: [
+            Row(children: [
+              Icon(
+                _certOk == true
+                    ? Icons.check_circle_rounded
+                    : Icons.info_outline_rounded,
+                size: 18,
+                color:
+                    _certOk == true ? Colors.green.shade300 : Colors.orange.shade300,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _certOk == true
+                      ? '已完成授权（cert.pem 就绪），可创建固定隧道'
+                      : '未授权：创建固定隧道前需要完成一次浏览器授权（自动打开授权页）',
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 12),
+            Wrap(spacing: 10, children: [
+              FilledButton.icon(
+                onPressed: bm.ready
+                    ? () async {
+                        await app.tunnels.startLogin();
+                        // 等待用户浏览器完成授权后落盘
+                        for (var i = 0; i < 60; i++) {
+                          await Future.delayed(const Duration(seconds: 2));
+                          if (await app.binaries.hasLoginCert()) break;
+                        }
+                        _refresh();
+                      }
+                    : null,
+                icon: const Icon(Icons.login_rounded, size: 18),
+                label: const Text('登录授权（浏览器）'),
+              ),
+              FilledButton.tonal(
+                onPressed: _refresh,
+                child: const Text('刷新状态'),
+              ),
+            ]),
+          ],
+        ),
+        const SizedBox(height: 14),
+
+        // ---------- Cloudflare API Token（域名管理） ----------
+        _Section(
+          title: 'Cloudflare API Token（域名管理）',
+          icon: Icons.cloud_circle_rounded,
+          children: [
+            Row(children: [
+              Icon(
+                app.cf.configured
+                    ? Icons.check_circle_rounded
+                    : Icons.info_outline_rounded,
+                size: 18,
+                color: app.cf.configured
+                    ? Colors.green.shade300
+                    : Colors.orange.shade300,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  app.cf.configured
+                      ? '已配置 API Token，可在「域名管理」页直接管理 DNS 记录'
+                      : '未配置：配置后可在工具内直接管理 Cloudflare 托管域名与 DNS 记录，无需登录网页控制台',
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 12),
+            _CfTokenEditor(app: app),
+          ],
+        ),
+        const SizedBox(height: 14),
+
+        // ---------- 开机自启 / 托盘 ----------
+        _Section(
+          title: '启动与后台运行',
+          icon: Icons.settings_power_rounded,
+          children: [
+            if (_autostart.supported)
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('开机自动启动（注册表 HKCU Run）'),
+                subtitle: const Text('启动后自动恢复上次隧道配置，最小化至托盘运行'),
+                value: _autostartOn ?? false,
+                onChanged: (v) async {
+                  await _autostart.setEnabled(v);
+                  setState(() => _autostartOn = v);
+                },
+              )
+            else
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('开机自启'),
+                subtitle: const Text('当前平台不支持（仅 Windows 提供注册表自启）'),
+                trailing: const Icon(Icons.do_not_disturb_outlined),
+              ),
+            if (Platform.isWindows)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('关闭窗口 = 最小化到托盘'),
+                subtitle: const Text('通过托盘菜单可启停隧道、复制公网地址、退出程序'),
+                trailing: const Icon(Icons.check_rounded, color: Colors.green),
+              ),
+          ],
+        ),
+        const SizedBox(height: 14),
+
+        // ---------- 关于 ----------
+        _Section(
+          title: '关于',
+          icon: Icons.info_outline_rounded,
+          children: [
+            const Text('云隧通 CloudTunnelX',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text('零服务器全协议内网穿透工具 · 双端可视化一键隧通内外网',
+                style: Theme.of(context).textTheme.bodySmall),
+            const SizedBox(height: 8),
+            Text(
+              '支持协议：HTTP / HTTPS / WebSocket / TCP\n'
+              '不支持：UDP、QUIC、ICMP、广播/组播（cloudflared 官方内核限制）\n'
+              '安全说明：全部流量为本地主动出站连接，不暴露本地端口；TCP 依托 Cloudflare Access 鉴权；配置与日志仅保存在本机。',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(height: 1.6),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _Section extends StatelessWidget {
+  final String title;
+  final IconData icon;
+  final List<Widget> children;
+  const _Section(
+      {required this.title, required this.icon, required this.children});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(icon, size: 18, color: scheme.primary),
+            const SizedBox(width: 8),
+            Text(title,
+                style:
+                    const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+          ]),
+          const SizedBox(height: 12),
+          ...children,
+        ]),
+      ),
+    );
+  }
+}
+
+class _CfTokenEditor extends StatefulWidget {
+  final AppController app;
+  const _CfTokenEditor({required this.app});
+
+  @override
+  State<_CfTokenEditor> createState() => _CfTokenEditorState();
+}
+
+class _CfTokenEditorState extends State<_CfTokenEditor> {
+  final _ctrl = TextEditingController();
+  bool _saving = false;
+  bool _reveal = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl.text = widget.app.cf.apiToken ?? '';
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      TextField(
+        controller: _ctrl,
+        maxLines: 2,
+        obscureText: !_reveal,
+        decoration: InputDecoration(
+          labelText: 'API Token',
+          prefixIcon: const Icon(Icons.key_rounded),
+          helperText: '在 Cloudflare 控制台 → My Profile → API Tokens 创建，权限选 Zone:Read + DNS:Edit',
+          suffixIcon: IconButton(
+            icon: Icon(_reveal ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                size: 18),
+            onPressed: () => setState(() => _reveal = !_reveal),
+          ),
+        ),
+      ),
+      if (_error != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Row(children: [
+            Icon(Icons.error_outline_rounded,
+                color: Colors.red.shade300, size: 16),
+            const SizedBox(width: 6),
+            Expanded(child: Text(_error!,
+                style: TextStyle(color: Colors.red.shade300, fontSize: 12))),
+          ]),
+        ),
+      const SizedBox(height: 10),
+      Wrap(spacing: 10, children: [
+        FilledButton.icon(
+          onPressed: _saving
+              ? null
+              : () async {
+                  final messenger = ScaffoldMessenger.of(context);
+                  setState(() {
+                    _saving = true;
+                    _error = null;
+                  });
+                  final ok = await widget.app.saveCfToken(_ctrl.text);
+                  if (!mounted) return;
+                  setState(() => _saving = false);
+                  if (ok) {
+                    messenger.showSnackBar(
+                        const SnackBar(content: Text('Token 验证成功，已保存')));
+                  } else {
+                    setState(() =>
+                        _error = widget.app.cf.lastError ?? 'Token 验证失败');
+                  }
+                },
+          icon: const Icon(Icons.verified_user_rounded, size: 18),
+          label: _saving
+              ? const SizedBox(
+                  width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Text('保存并验证'),
+        ),
+        if (widget.app.cf.configured)
+          TextButton.icon(
+            onPressed: _saving ? null : () async {
+              await widget.app.clearCfToken();
+              _ctrl.clear();
+              setState(() => _error = null);
+            },
+            icon: const Icon(Icons.delete_outline_rounded, size: 16),
+            label: const Text('清除 Token'),
+          ),
+      ]),
+    ]);
+  }
+}
