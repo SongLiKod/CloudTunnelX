@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/models/log_entry.dart';
 import '../../core/models/protocol_type.dart';
@@ -147,6 +149,105 @@ class CopyButton extends StatelessWidget {
               const SnackBar(content: Text('已复制到剪贴板'), duration: Duration(seconds: 1)));
         }
       },
+    );
+  }
+}
+
+/// 补齐协议前缀（域名无 scheme 时按 https 处理）
+String ensureScheme(String url) =>
+    url.contains('://') ? url : 'https://$url';
+
+/// 一键用浏览器打开公网地址
+class OpenUrlButton extends StatelessWidget {
+  final String url;
+  final String? tooltip;
+  const OpenUrlButton({super.key, required this.url, this.tooltip});
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip ?? '用浏览器打开',
+      icon: const Icon(Icons.open_in_new_rounded, size: 18),
+      onPressed: () async {
+        final target = ensureScheme(url);
+        final ok = await launchUrl(Uri.parse(target),
+            mode: LaunchMode.externalApplication);
+        if (!ok && context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('无法打开 $target，请手动复制到浏览器访问')));
+        }
+      },
+    );
+  }
+}
+
+/// 展示公网地址二维码（手机扫码直接访问/对接入命令）
+class QrButton extends StatelessWidget {
+  final String value;
+  final String? tooltip;
+  const QrButton({super.key, required this.value, this.tooltip});
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip ?? '生成二维码',
+      icon: const Icon(Icons.qr_code_2_rounded, size: 18),
+      onPressed: () => showDialog(
+        context: context,
+        builder: (_) => QrDialog(value: value),
+      ),
+    );
+  }
+}
+
+/// 二维码弹窗：展示内容 + 复制
+class QrDialog extends StatelessWidget {
+  final String value;
+  const QrDialog({super.key, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('手机扫码访问'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: QrImageView(
+              data: value,
+              version: QrVersions.auto,
+              size: 220,
+              backgroundColor: Colors.white,
+            ),
+          ),
+          const SizedBox(height: 10),
+          SelectableText(value,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontFamily: 'Consolas', fontSize: 12.5)),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('关闭'),
+        ),
+        FilledButton.icon(
+          onPressed: () async {
+            await Clipboard.setData(ClipboardData(text: value));
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('已复制到剪贴板'), duration: Duration(seconds: 1)));
+            }
+          },
+          icon: const Icon(Icons.copy_rounded, size: 16),
+          label: const Text('复制'),
+        ),
+      ],
     );
   }
 }

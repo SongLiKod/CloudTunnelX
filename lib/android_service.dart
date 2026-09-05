@@ -73,11 +73,19 @@ void initForegroundService() {
 }
 
 /// 根据运行中隧道数量更新前台服务（需求 5.2.1 通知常驻提示：运行中/隧道数量）
-Future<void> updateForegroundService(int runningCount) async {
+/// [disconnectedCount] 为断线重连/异常的隧道数，>0 时在通知文案中提示
+Future<void> updateForegroundService(int runningCount,
+    {int disconnectedCount = 0}) async {
   if (!Platform.isAndroid) return;
   final running = runningCount > 0;
-  final title = running ? '云隧通 · 隧道运行中' : '云隧通';
-  final text = running ? '共 $running 条隧道正在穿透，保持后台连接' : '隧道未运行';
+  final title = running
+      ? (disconnectedCount > 0 ? '云隧通 · 隧道断线重连' : '云隧通 · 隧道运行中')
+      : '云隧通';
+  final text = !running
+      ? '隧道未运行'
+      : (disconnectedCount > 0
+          ? '共 $running 条隧道运行中，$disconnectedCount 条断线重连'
+          : '共 $running 条隧道正在穿透，保持后台连接');
   try {
     if (running) {
       if (await FlutterForegroundTask.isRunningService) {

@@ -169,6 +169,8 @@ class _TunnelCard extends StatelessWidget {
           Wrap(spacing: 16, runSpacing: 6, children: [
             _kv('模式', c.mode == TunnelMode.quick ? '临时穿透' : '固定穿透'),
             _kv('本地服务', '${c.localHost}:${c.localPort}'),
+            if (c.schedule?.enabled == true)
+              _kv('定时启停', c.schedule!.label),
             if (rt?.uptime != null)
               _kv('在线时长', OverviewPage._fmtDuration(rt!.uptime!)),
             if ((rt?.requestCount ?? 0) > 0) _kv('请求数', '${rt!.requestCount}'),
@@ -192,6 +194,8 @@ class _TunnelCard extends StatelessWidget {
                 Expanded(
                     child: SelectableText(url,
                         style: const TextStyle(fontWeight: FontWeight.w600))),
+                OpenUrlButton(url: url),
+                QrButton(value: ensureScheme(url)),
                 CopyButton(value: url),
               ]),
             ),
@@ -209,6 +213,7 @@ class _TunnelCard extends StatelessWidget {
                           fontFamily: 'Consolas',
                           color:
                               Theme.of(context).colorScheme.onSurfaceVariant))),
+              QrButton(value: rt.accessHint!, tooltip: '接入命令二维码'),
               CopyButton(value: rt.accessHint!, tooltip: '复制客户端接入命令'),
             ]),
           ],
