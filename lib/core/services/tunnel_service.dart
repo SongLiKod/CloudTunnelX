@@ -72,7 +72,6 @@ class TunnelService extends ChangeNotifier {
 
   // ---------- 命令组装（技术文档 3.1 通用启动参数规则） ----------
   List<String> buildRunArgs(TunnelConfig c, int metricsPort) {
-    final url = '${c.protocol.scheme}://${c.localHost}:${c.localPort}';
     if (c.mode == TunnelMode.quick) {
       // 临时隧道：cloudflared tunnel --url 协议://IP:端口
       // cloudflared 快速隧道 origin 仅接受 http/https：
@@ -91,17 +90,39 @@ class TunnelService extends ChangeNotifier {
       // 远程管理模式：ingress 规则由 Cloudflare 控制台配置
       return ['tunnel', 'run', '--no-autoupdate', '--token', c.tunnelToken!];
     }
-    // 固定命名隧道：cloudflared tunnel run --url ... <uuid>
+    // 固定命名隧道：使用 ingress 配置文件而不是 --url。
+    // --url 简写仅接受 http/https origin（ws/tcp 会打印 usage 并退出），
+    // 而 ingress 的 service 原生支持 http/https/ws/wss/tcp 全协议。
     return [
       'tunnel',
       'run',
-      '--url',
-      url,
       '--no-autoupdate',
+      '--config',
+      _writeIngressConfig(c),
       '--metrics',
       '127.0.0.1:$metricsPort',
       c.tunnelUuid ?? c.name,
     ];
+  }
+
+  /// 生成命名隧道 ingress 配置文件（保存到系统临时目录，每次启动重建），返回文件路径。
+  /// 凭证文件由 `cloudflared tunnel create` 落盘于 `~/.cloudflared/{uuid}.json`，可省略。
+  String _writeIngressConfig(TunnelConfig c) {
+    final dir = Directory(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}cloudtunnelx-ingress');
+    if (!dir.existsSync()) dir.createSync(recursive: true);
+    final key = c.tunnelUuid ?? c.name;
+    final host = (c.subdomain ?? '').trim();
+    final service = '${c.protocol.scheme}://${c.localHost}:${c.localPort}';
+    final file = File('${dir.path}${Platform.pathSeparator}$key.yml');
+    file.writeAsStringSync('''
+tunnel: $key
+ingress:
+  - hostname: ${host.isEmpty ? '*' : host}
+    service: $service
+  - service: http_status:404
+''');
+    return file.path;
   }
 
   Future<int> _allocMetricsPort() async {
