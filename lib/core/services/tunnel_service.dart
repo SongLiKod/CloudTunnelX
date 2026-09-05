@@ -88,19 +88,22 @@ class TunnelService extends ChangeNotifier {
     }
     if (c.isNamedTokenMode) {
       // 远程管理模式：ingress 规则由 Cloudflare 控制台配置
-      return ['tunnel', 'run', '--no-autoupdate', '--token', c.tunnelToken!];
+      // 注意：--no-autoupdate 是 tunnel 命令级选项，必须放在 run 子命令之前
+      return ['tunnel', '--no-autoupdate', 'run', '--token', c.tunnelToken!];
     }
     // 固定命名隧道：使用 ingress 配置文件而不是 --url。
     // --url 简写仅接受 http/https origin（ws/tcp 会打印 usage 并退出），
     // 而 ingress 的 service 原生支持 http/https/ws/wss/tcp 全协议。
+    // 注意：新版内核将 --no-autoupdate/--config/--metrics 定义为 tunnel 命令级选项，
+    // 放在 run 之后会报 "flag provided but not defined" 并打印 usage 退出。
     return [
       'tunnel',
-      'run',
       '--no-autoupdate',
       '--config',
       _writeIngressConfig(c),
       '--metrics',
       '127.0.0.1:$metricsPort',
+      'run',
       c.tunnelUuid ?? c.name,
     ];
   }
@@ -114,14 +117,14 @@ class TunnelService extends ChangeNotifier {
     final key = c.tunnelUuid ?? c.name;
     final host = (c.subdomain ?? '').trim();
     final service = '${c.protocol.scheme}://${c.localHost}:${c.localPort}';
+    // hostname 为 *（未绑定子域名）时不能再追加兜底规则，
+    // 新版内核会校验报错「Rule matching '*' ... rules which follow it will never be triggered」，
+    // 此时直接作为唯一的兜底规则即可。
+    final rules = host.isEmpty
+        ? '  - service: $service\n'
+        : '  - hostname: $host\n    service: $service\n  - service: http_status:404\n';
     final file = File('${dir.path}${Platform.pathSeparator}$key.yml');
-    file.writeAsStringSync('''
-tunnel: $key
-ingress:
-  - hostname: ${host.isEmpty ? '*' : host}
-    service: $service
-  - service: http_status:404
-''');
+    file.writeAsStringSync('tunnel: $key\ningress:\n$rules');
     return file.path;
   }
 
