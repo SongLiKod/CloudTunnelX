@@ -199,11 +199,33 @@ class AppController extends ChangeNotifier {
       if (!skipDnsCheck && sd.isNotEmpty) {
         // 取最后两段作为根域名（如 sub.app.example.com → example.com）
         final root = ValidationService.rootDomainOf(sd);
-        final managed = await validation.domainManagedByCloudflare(root);
+        bool managed = false;
+        var apiOk = false;
+        // 优先用已配置的 CF API Token 校验：不受公网 DoH 可达性影响，结果更可靠
+        if (cf.configured) {
+          try {
+            final zones = await cf.listZones();
+            managed = bestZoneFor(root, zones) != null;
+            apiOk = true; // API 查询成功，以 API 结论为准
+          } catch (_) {
+            // API 不可用，继续走 DoH 兜底
+          }
+        }
+        if (!apiOk) {
+          final doh = await validation.domainManagedByCloudflare(root);
+          managed = doh == true;
+          if (doh == null) {
+            // DoH 也异常：网络问题，引导用户手动确认而非误报「未托管」
+            return (null, ValidationResult([
+              ValidationIssue(
+                  '域名 $root 的 DNS 托管状态暂时无法确认（网络异常，API 与 DoH 均不可达）。请确认域名已在 Cloudflare 托管，或勾选「跳过 DNS 校验」后重试。')
+            ]));
+          }
+        }
         if (!managed) {
           return (null, ValidationResult([
-            const ValidationIssue(
-                '域名 DNS 托管校验失败：未检测到 Cloudflare NS 记录。请先在域名注册商处把 DNS 服务器迁移至 Cloudflare，或勾选「跳过 DNS 校验」后重试。')
+            ValidationIssue(
+                '域名 $root 未托管在 Cloudflare（未检测到 Cloudflare NS 记录）。请先在域名注册商处把 DNS 服务器迁移至 Cloudflare，或勾选「跳过 DNS 校验」后重试。')
           ]));
         }
       }

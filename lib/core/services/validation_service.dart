@@ -125,17 +125,18 @@ class ValidationService {
   }
 
   /// 域名 DNS 托管校验：通过 DoH 查询 NS 记录是否指向 Cloudflare
-  Future<bool> domainManagedByCloudflare(String domain) async {
+  /// 返回 true=已托管；false=确认未托管；null=网络异常无法判定
+  Future<bool?> domainManagedByCloudflare(String domain) async {
     try {
       final res = await http.get(
         Uri.parse('https://cloudflare-dns.com/dns-query?name=$domain&type=NS'),
         headers: {'accept': 'application/dns-json'},
       ).timeout(const Duration(seconds: 5));
-      if (res.statusCode != 200) return false;
+      if (res.statusCode != 200) return null;
       final body = res.body.toLowerCase();
       return body.contains('.ns.cloudflare.com');
     } catch (_) {
-      return false;
+      return null;
     }
   }
 
@@ -168,7 +169,11 @@ class ValidationService {
     if (sd.isNotEmpty) {
       final root = ValidationService.rootDomainOf(sd);
       final managed = await domainManagedByCloudflare(root);
-      if (!managed) {
+      if (managed == null) {
+        issues.add(ValidationIssue(
+            '无法确认域名 $root 的 DNS 托管状态（网络异常，DoH 查询不可达）',
+            blocking: false));
+      } else if (!managed) {
         issues.add(ValidationIssue(
             '域名 $root 的 NS 记录未指向 Cloudflare：请先在域名注册商处将 DNS 托管迁移至 Cloudflare'));
       }
