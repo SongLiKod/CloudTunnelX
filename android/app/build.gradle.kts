@@ -30,6 +30,14 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    // Android 10+ 禁止执行应用可写目录中的文件（W^X 策略），
+    // 内置内核必须作为 .so 放在 jniLibs，并由 install 阶段真实解压到 nativeLibraryDir。
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 kotlin {

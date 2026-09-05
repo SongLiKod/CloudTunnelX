@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/services/app_controller.dart';
 import '../../core/services/autostart_service.dart';
@@ -65,8 +66,9 @@ class _SettingsPageState extends State<SettingsPage> {
               Expanded(
                 child: Text(
                   bm.ready
-                      ? '内核就绪 · ${bm.version ?? '版本检测中'}\n${bm.binaryPath}'
-                      : '未检测到 cloudflared 内核，请一键下载${isAndroid ? "或从发布页获取 arm64 内核后导入" : ""}',
+                      ? '内核就绪 · ${bm.version ?? '版本检测中'}'
+                          '${isAndroid ? '（随应用内置）' : ''}\n${bm.binaryPath}'
+                      : '未检测到 cloudflared 内核，请${isAndroid ? '按下方指引将内核内置到 APK 后重新构建安装' : '一键下载'}',
                   style: const TextStyle(fontSize: 13),
                 ),
               ),
@@ -80,36 +82,30 @@ class _SettingsPageState extends State<SettingsPage> {
             ],
             const SizedBox(height: 12),
             Wrap(spacing: 10, children: [
-              FilledButton.icon(
-                onPressed: bm.downloading
-                    ? null
-                    : () async {
-                        try {
-                          if (isAndroid) {
-                            final picked = await FilePicker.pickFile();
-                            final path = picked?.path;
-                            if (path != null) await bm.importBinary(path);
-                          } else {
+              if (!isAndroid)
+                FilledButton.icon(
+                  onPressed: bm.downloading
+                      ? null
+                      : () async {
+                          try {
                             await bm.installLatest();
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                  content:
+                                      Text('内核安装完成：${bm.version ?? ''}')));
+                            }
+                          } catch (e) {
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                  content: Text('安装失败：$e'),
+                                  backgroundColor:
+                                      Theme.of(context).colorScheme.error));
+                            }
                           }
-                          if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                                content: Text(isAndroid
-                                    ? '内核导入完成'
-                                    : '内核安装完成：${bm.version ?? ''}')));
-                          }
-                        } catch (e) {
-                          if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                                content: Text('安装失败：$e'),
-                                backgroundColor:
-                                    Theme.of(context).colorScheme.error));
-                          }
-                        }
-                      },
-                icon: const Icon(Icons.download_rounded, size: 18),
-                label: Text(isAndroid ? '导入内核文件' : '一键下载 / 更新内核'),
-              ),
+                        },
+                  icon: const Icon(Icons.download_rounded, size: 18),
+                  label: const Text('一键下载 / 更新内核'),
+                ),
               FilledButton.tonal(
                 onPressed: () async {
                   await bm.resolveBinary();
@@ -127,7 +123,9 @@ class _SettingsPageState extends State<SettingsPage> {
                               content: Text('当前已是最新版本，无需更新')));
                         } else {
                           messenger.showSnackBar(SnackBar(
-                              content: Text('发现新版本 ${bm.version} → $latest，可点击「一键下载 / 更新内核」升级'),
+                              content: Text(isAndroid
+                                  ? '发现新版本 ${bm.version} → $latest，更新内核需重新构建安装（见下方指引）'
+                                  : '发现新版本 ${bm.version} → $latest，可点击「一键下载 / 更新内核」升级'),
                               duration: const Duration(seconds: 4)));
                         }
                       }
@@ -137,11 +135,44 @@ class _SettingsPageState extends State<SettingsPage> {
             ]),
             if (isAndroid) ...[
               const SizedBox(height: 8),
-              Text('Android 平台无官方 cloudflared 预编译包，请使用社区 arm64-v8a 构建版内核文件导入。',
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodySmall
-                      ?.copyWith(color: Colors.orange.shade300)),
+              // Android 10+ W^X 策略：内核只能内置，展示如何获取/更换内置内核
+              ExpansionTile(
+                tilePadding: const EdgeInsets.symmetric(horizontal: 4),
+                childrenPadding:
+                    const EdgeInsets.only(left: 8, right: 8, bottom: 4),
+                shape: const Border(),
+                collapsedShape: const Border(),
+                title: Text('如何获取 / 更新 Android arm64 内核？',
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.orange.shade300,
+                        fontWeight: FontWeight.w600)),
+                children: [
+                  const _GuideRow(
+                    step: '1',
+                    text: 'Android 10+ 出于安全（W^X 策略）禁止执行应用可写目录里的文件，导入模式不可用；内核必须以 libcloudflared.so 随 APK 内置，运行时从安装目录（nativeLibraryDir，只读可执行）启动。',
+                  ),
+                  _GuideRow(
+                    step: '2',
+                    text: '获取内核：官方 GitHub Releases 的 cloudflared-linux-arm64（点下方按钮浏览器下载）。也可以从 Termux 获取 Android 构建版，临时穿透更稳（可规避 "lookup … on [::1]:53" 类 DNS 报错）。',
+                    action: FilledButton.tonalIcon(
+                      onPressed: () => launchUrl(Uri.parse(
+                          'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64'),
+                          mode: LaunchMode.externalApplication),
+                      icon: const Icon(Icons.download_rounded, size: 16),
+                      label: const Text('下载 linux-arm64'),
+                    ),
+                  ),
+                  const _GuideRow(
+                    step: '3',
+                    text: '更换内置内核：把下载的二进制改名为 libcloudflared.so，放入工程目录 android/app/src/main/jniLibs/arm64-v8a/ 下，然后重新构建安装 App（flutter run / 打包 APK）。',
+                  ),
+                  const _GuideRow(
+                    step: '4',
+                    text: '内置后到这里点「重新检测」即可识别版本；若识别失败，请确认放入的是 arm64-v8a (aarch64) 架构的文件。',
+                  ),
+                ],
+              ),
             ],
           ],
         ),
@@ -608,5 +639,44 @@ class _CfTokenEditorState extends State<_CfTokenEditor> {
           ),
       ]),
     ]);
+  }
+}
+
+/// 内核获取教程中的一行：序号圆点 + 说明（可带操作按钮）
+class _GuideRow extends StatelessWidget {
+  final String step;
+  final String text;
+  final Widget? action;
+  const _GuideRow({required this.step, required this.text, this.action});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(
+          width: 18,
+          height: 18,
+          alignment: Alignment.center,
+          decoration:
+              BoxDecoration(color: scheme.primary, shape: BoxShape.circle),
+          child: Text(step,
+              style: TextStyle(
+                  fontSize: 10,
+                  color: scheme.onPrimary,
+                  fontWeight: FontWeight.w700)),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(text, style: Theme.of(context).textTheme.bodySmall),
+                if (action != null) ...[const SizedBox(height: 6), action!],
+              ]),
+        ),
+      ]),
+    );
   }
 }
