@@ -67,7 +67,7 @@ class _QuickTunnelPageState extends State<QuickTunnelPage> {
                 .headlineSmall
                 ?.copyWith(fontWeight: FontWeight.w700)),
         const SizedBox(height: 6),
-        Text('无需自有域名，HTTP 类自动生成 Cloudflare 临时域名，TCP 类通过 Access 命令接入',
+        Text('无需自有域名，HTTP/HTTPS/WebSocket 自动生成 Cloudflare 临时域名；TCP 穿透请使用固定隧道并配合 Access 命令接入',
             style: Theme.of(context).textTheme.bodySmall),
         const SizedBox(height: 16),
         Card(
@@ -83,8 +83,14 @@ class _QuickTunnelPageState extends State<QuickTunnelPage> {
                     items: ProtocolType.values
                         .map((p) => DropdownMenuItem(
                             value: p,
-                            child: Text('${p.label} · ${p.desc}',
-                                style: const TextStyle(fontSize: 14))))
+                            enabled: p != ProtocolType.tcp,
+                            child: Text(
+                                '${p.label} · ${p.desc}',
+                                style: TextStyle(
+                                    fontSize: 14,
+                                    color: p == ProtocolType.tcp
+                                        ? Theme.of(context).disabledColor
+                                        : null))))
                         .toList(),
                     onChanged: (v) => setState(() => _protocol = v!),
                   ),
@@ -236,6 +242,31 @@ class _QuickTunnelPageState extends State<QuickTunnelPage> {
                               st == TunnelStatus.reconnecting)
                           ? () => app.stopTunnel(c.id)
                           : null),
+                  IconButton(
+                      tooltip: '删除',
+                      icon: const Icon(Icons.delete_outline_rounded, size: 20),
+                      onPressed: () async {
+                        final ok = await showDialog<bool>(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                                  title: const Text('删除临时隧道'),
+                                  content: Text(
+                                      '确定删除该临时隧道（${c.localHost}:${c.localPort}）？将停止进程并移除本地配置。'),
+                                  actions: [
+                                    TextButton(
+                                        onPressed: () =>
+                                            Navigator.pop(ctx, false),
+                                        child: const Text('取消')),
+                                    FilledButton(
+                                        onPressed: () =>
+                                            Navigator.pop(ctx, true),
+                                        child: const Text('删除')),
+                                  ],
+                                ));
+                        if (ok == true && context.mounted) {
+                          await app.deleteTunnel(c);
+                        }
+                      }),
                 ]),
               ),
             );
