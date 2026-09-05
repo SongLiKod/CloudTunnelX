@@ -61,13 +61,15 @@ class CloudTunnelXApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return ChangeNotifierProvider.value(
       value: controller,
-      child: MaterialApp(
-        title: '云隧通 CloudTunnelX',
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.light(),
-        darkTheme: AppTheme.dark(),
-        themeMode: ThemeMode.system,
-        home: AppBootstrap(controller: controller),
+      child: Consumer<AppController>(
+        builder: (context, app, _) => MaterialApp(
+          title: '云隧通 CloudTunnelX',
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.light(),
+          darkTheme: AppTheme.dark(),
+          themeMode: app.themeMode,
+          home: AppBootstrap(controller: controller),
+        ),
       ),
     );
   }

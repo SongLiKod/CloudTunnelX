@@ -262,6 +262,39 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
         const SizedBox(height: 14),
 
+        // ---------- 外观主题 ----------
+        _Section(
+          title: '外观主题',
+          icon: Icons.palette_outlined,
+          children: [
+            RadioGroup<ThemeMode>(
+              groupValue: app.themeMode,
+              onChanged: (v) {
+                if (v != null) app.setThemeMode(v);
+              },
+              child: Column(children: [
+                const RadioListTile<ThemeMode>(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('跟随系统'),
+                  subtitle: Text('自动匹配操作系统当前的浅色/深色'),
+                  value: ThemeMode.system,
+                ),
+                const RadioListTile<ThemeMode>(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('浅色'),
+                  value: ThemeMode.light,
+                ),
+                const RadioListTile<ThemeMode>(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('深色'),
+                  value: ThemeMode.dark,
+                ),
+              ]),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+
         // ---------- 配置备份（导入/导出 JSON） ----------
         _Section(
           title: '隧道配置备份',
