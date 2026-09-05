@@ -71,9 +71,10 @@ class AppUpdater extends ChangeNotifier {
       }
       final j = jsonDecode(res.body) as Map<String, dynamic>;
       final tag = ((j['tag_name'] as String?) ?? '').replaceFirst(RegExp(r'^v'), '');
-      final m = RegExp(r'\d{1,3}(\.\d{1,3}){1,2}').firstMatch(tag);
+      // 注意取 group(0) 完整匹配；带量词的重复捕获组只保留最后一段（如 ".0"）
+      final m = RegExp(r'\d{1,3}(?:\.\d{1,3}){1,2}').firstMatch(tag);
       if (m == null) throw const FormatException('无法解析发布版本号');
-      _latestVersion = m.group(1);
+      _latestVersion = m.group(0);
       final body = ((j['body'] as String?) ?? '').trim();
       _releaseNotes = body.isEmpty ? null : body;
     } catch (e) {
