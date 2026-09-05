@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -12,6 +13,7 @@ import '../models/protocol_type.dart';
 import '../models/tunnel_config.dart';
 import '../models/tunnel_status.dart';
 import '../../android_service.dart';
+import 'app_updater.dart';
 import 'binary_manager.dart';
 import 'cloudflare_service.dart';
 import 'config_repository.dart';
@@ -27,6 +29,7 @@ class AppController extends ChangeNotifier {
   final TunnelService tunnels;
   final CloudflareService cf;
   final ValidationService validation = ValidationService();
+  final AppUpdater updater = AppUpdater();
 
   static const _cfTokenKey = 'cf_api_token';
 
@@ -54,7 +57,18 @@ class AppController extends ChangeNotifier {
     }
     // 从安全存储恢复 Cloudflare API Token（异步，完成后自动迁移旧明文）
     _loadCfToken();
+    // 应用自身版本更新：读取当前版本并静默检查一次 GitHub Release
+    updater.addListener(notifyListeners);
+    unawaited(updater.init());
+    unawaited(updater.checkForUpdate());
   }
+
+  /// 手动检查应用更新（设置页「关于」入口）
+  Future<void> checkAppUpdate() => updater.checkForUpdate();
+
+  /// 执行应用升级（Windows 静默替换重启 / Android 跳转下载）
+  Future<void> upgradeApp() =>
+      updater.downloadAndInstall(onExit: () => exit(0));
 
   /// 从安全存储读取 Token；若安全存储为空但 hive 中存在旧版明文，则迁移过去
   Future<void> _loadCfToken() async {
