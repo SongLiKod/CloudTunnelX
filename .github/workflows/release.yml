@@ -71,6 +71,7 @@ jobs:
         with:
           name: cloudtunnelx-windows
           path: ${{ env.PKG_PATH }}
+          retention-days: 7
 
   # Android 发布包
   build-android:
@@ -112,6 +113,7 @@ jobs:
           path: |
             cloudtunnelx-android-${{ env.RELEASE_TAG }}.apk
             cloudtunnelx-android-${{ env.RELEASE_TAG }}.aab
+          retention-days: 7
 
   # 合并并发布到 GitHub Release
   release:

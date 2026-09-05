@@ -6,6 +6,7 @@ class CfZone {
   final bool paused;
   final String? planName;
   final String nameServers;
+  final String? accountId;
 
   CfZone({
     required this.id,
@@ -14,6 +15,7 @@ class CfZone {
     required this.paused,
     this.planName,
     required this.nameServers,
+    this.accountId,
   });
 
   factory CfZone.fromJson(Map<String, dynamic> j) {
@@ -25,8 +27,24 @@ class CfZone {
       paused: j['paused'] as bool? ?? false,
       planName: (j['plan'] as Map?)?['name'] as String?,
       nameServers: ns,
+      accountId: (j['account'] as Map?)?['id'] as String?,
     );
   }
+}
+
+/// Cloudflare 命名隧道信息（连接状态查询）
+class CfTunnelInfo {
+  final String id;
+  final String name;
+  final int connections;
+
+  CfTunnelInfo({required this.id, required this.name, required this.connections});
+
+  factory CfTunnelInfo.fromJson(Map<String, dynamic> j) => CfTunnelInfo(
+        id: j['id'] as String? ?? '',
+        name: j['name'] as String? ?? '',
+        connections: ((j['connections'] as List?) ?? []).length,
+      );
 }
 
 /// Cloudflare DNS 记录

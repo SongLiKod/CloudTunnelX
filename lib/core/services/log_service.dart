@@ -9,9 +9,47 @@ import 'error_catalog.dart';
 /// 日志与报错解析服务（需求 3.4：实时输出 / 智能解析 / 导出 / 清空）
 class LogService extends ChangeNotifier {
   static const int _maxEntries = 5000;
+
+  /// 单文件上限（超出后滚动为 .1 备份）
+  static const int _maxFileBytes = 2 * 1024 * 1024;
+
   final List<LogEntry> _entries = [];
+  Directory? _logDir;
 
   List<LogEntry> get entries => List.unmodifiable(_entries);
+
+  /// 初始化日志落盘目录（可选，未初始化时仅内存记录）
+  void initLogDir(String dir) {
+    try {
+      final d = Directory(dir);
+      if (!d.existsSync()) d.createSync(recursive: true);
+      _logDir = d;
+    } catch (_) {
+      _logDir = null;
+    }
+  }
+
+  /// 当前日志文件路径（未初始化落盘时为 null）
+  String? get logFilePath =>
+      _logDir == null ? null : '${_logDir!.path}${Platform.pathSeparator}cloudtunnelx.log';
+
+  void _persist(LogEntry e) {
+    final dir = _logDir;
+    if (dir == null) return;
+    try {
+      final f = File(logFilePath!);
+      if (f.existsSync() && f.lengthSync() > _maxFileBytes) {
+        final rotated = File('${f.path}.1');
+        if (rotated.existsSync()) rotated.deleteSync();
+        f.renameSync(rotated.path);
+      }
+      final line =
+          '[${e.time.toIso8601String()}] [${e.level.name.toUpperCase()}] [${e.tunnelName}/${e.protocol?.label ?? "-"}] ${e.message}';
+      f.writeAsStringSync('$line\n', mode: FileMode.append, flush: true);
+    } catch (_) {
+      // 落盘失败不影响主流程
+    }
+  }
 
   void log({
     required String tunnelId,
@@ -21,7 +59,7 @@ class LogService extends ChangeNotifier {
     required String message,
     String? fixHint,
   }) {
-    _entries.add(LogEntry(
+    final entry = LogEntry(
       time: DateTime.now(),
       tunnelId: tunnelId,
       tunnelName: tunnelName,
@@ -29,10 +67,12 @@ class LogService extends ChangeNotifier {
       level: level,
       message: message.trim(),
       fixHint: fixHint,
-    ));
+    );
+    _entries.add(entry);
     if (_entries.length > _maxEntries) {
       _entries.removeRange(0, _entries.length - _maxEntries);
     }
+    _persist(entry);
     notifyListeners();
   }
 

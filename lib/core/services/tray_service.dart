@@ -32,7 +32,10 @@ class TrayService {
       await _tray.setContextMenu(menu);
 
       _tray.registerSystemTrayEventHandler((eventName) {
-        if (eventName == kSystemTrayEventClick ||
+        if (eventName == kSystemTrayEventRightClick) {
+          // Windows 下右键图标不会自动弹菜单，需显式弹出（system_tray 2.0.x 行为）
+          _tray.popUpContextMenu();
+        } else if (eventName == kSystemTrayEventClick ||
             eventName == kSystemTrayEventDoubleClick) {
           onShow();
         }

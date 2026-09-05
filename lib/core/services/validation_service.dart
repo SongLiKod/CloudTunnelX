@@ -115,6 +115,15 @@ class ValidationService {
     return null;
   }
 
+  /// 从子域名提取根域名（取最后两段）
+  /// 例：sub.app.example.com → example.com；example.com → example.com
+  static String rootDomainOf(String subdomain) {
+    final parts = subdomain.split('.');
+    return parts.length >= 2
+        ? parts.sublist(parts.length - 2).join('.')
+        : subdomain;
+  }
+
   /// 域名 DNS 托管校验：通过 DoH 查询 NS 记录是否指向 Cloudflare
   Future<bool> domainManagedByCloudflare(String domain) async {
     try {
@@ -157,11 +166,7 @@ class ValidationService {
     }
     final sd = (c.subdomain ?? '').trim();
     if (sd.isNotEmpty) {
-      final parts = sd.split('.');
-      // 取最后两段作为根域名（如 sub.app.example.com → example.com）
-      final root = parts.length >= 2
-          ? parts.sublist(parts.length - 2).join('.')
-          : sd;
+      final root = ValidationService.rootDomainOf(sd);
       final managed = await domainManagedByCloudflare(root);
       if (!managed) {
         issues.add(ValidationIssue(

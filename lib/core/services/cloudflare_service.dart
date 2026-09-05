@@ -14,6 +14,7 @@ class CloudflareService extends ChangeNotifier {
   String? _apiToken;
   bool _testing = false;
   String? _lastError;
+  String? _accountId;
 
   String? get apiToken => _apiToken;
   bool get configured => (_apiToken ?? '').trim().isNotEmpty;
@@ -65,13 +66,45 @@ class CloudflareService extends ChangeNotifier {
       if (!_ok(res)) throw ApiException(_message(res));
       final body = jsonDecode(res.body);
       final result = body['result'] as List;
-      zones.addAll(result.map((j) => CfZone.fromJson(j as Map<String, dynamic>)));
+      final zoneList =
+          result.map((j) => CfZone.fromJson(j as Map<String, dynamic>)).toList();
+      zones.addAll(zoneList);
+      // 缓存账户 ID（隧道连接状态查询需要）
+      for (final z in zoneList) {
+        if (z.accountId != null) {
+          _accountId = z.accountId;
+          break;
+        }
+      }
       final info = body['result_info'] as Map;
       final totalPages = info['total_pages'] as int;
       if (page >= totalPages) break;
       page++;
     }
     return zones;
+  }
+
+  /// 查询账户下命名隧道的连接状态（边缘节点连接数）
+  /// uuid 为空时返回全部隧道
+  Future<List<CfTunnelInfo>> listTunnels({String? uuid}) async {
+    if (!configured) throw StateError('未配置 Cloudflare API Token');
+    final accountId = _accountId;
+    if (accountId == null) {
+      // 尚未拉取过 Zone，先取一次以获得账户 ID
+      await listZones();
+    }
+    if (_accountId == null) throw ApiException('无法获取 Cloudflare 账户 ID');
+    final q = uuid != null ? '&uuid=$uuid' : '';
+    final res = await http.get(
+      Uri.parse('$_base/accounts/$_accountId/tunnels?is_deleted=false$q'),
+      headers: _headers,
+    ).timeout(const Duration(seconds: 15));
+    if (!_ok(res)) throw ApiException(_message(res));
+    final body = jsonDecode(res.body);
+    final result = (body['result'] as List?) ?? [];
+    return result
+        .map((j) => CfTunnelInfo.fromJson(j as Map<String, dynamic>))
+        .toList();
   }
 
   /// 列出某域名下的 DNS 记录

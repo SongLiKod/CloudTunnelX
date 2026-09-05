@@ -84,6 +84,7 @@ jobs:
           name: cloudtunnelx-windows
           path: build/windows/x64/runner/Release/
           if-no-files-found: error
+          retention-days: 7
 
   # Android 发布包构建
   build-android:
@@ -122,3 +123,4 @@ jobs:
             build/app/outputs/flutter-apk/app-release.apk
             build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
+          retention-days: 7

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -114,6 +115,24 @@ class _SettingsPageState extends State<SettingsPage> {
                   await bm.resolveBinary();
                 },
                 child: const Text('重新检测'),
+              ),
+              FilledButton.tonal(
+                onPressed: bm.ready
+                    ? () async {
+                        final latest = await bm.checkUpdate();
+                        if (!context.mounted) return;
+                        final messenger = ScaffoldMessenger.of(context);
+                        if (latest == null) {
+                          messenger.showSnackBar(const SnackBar(
+                              content: Text('当前已是最新版本，无需更新')));
+                        } else {
+                          messenger.showSnackBar(SnackBar(
+                              content: Text('发现新版本 ${bm.version} → $latest，可点击「一键下载 / 更新内核」升级'),
+                              duration: const Duration(seconds: 4)));
+                        }
+                      }
+                    : null,
+                child: const Text('检查更新'),
               ),
             ]),
             if (isAndroid) ...[
@@ -243,6 +262,64 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
         const SizedBox(height: 14),
 
+        // ---------- 配置备份（导入/导出 JSON） ----------
+        _Section(
+          title: '隧道配置备份',
+          icon: Icons.backup_rounded,
+          children: [
+            Text('将全部隧道配置导出为 JSON 文件（含名称/协议/本地端口/子域名/Token 模式，不含 API Token），可迁移到其他设备。',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(height: 1.5)),
+            const SizedBox(height: 12),
+            Wrap(spacing: 10, children: [
+              FilledButton.tonalIcon(
+                onPressed: () async {
+                  final json = app.exportConfigsJson();
+                  final path = await FilePicker.saveFile(
+                    dialogTitle: '导出隧道配置',
+                    fileName: 'cloudtunnelx_backup_${DateTime.now().millisecondsSinceEpoch}.json',
+                    type: FileType.any,
+                    bytes: utf8.encode(json),
+                  );
+                  if (path != null && context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('已导出 ${app.tunnels.all.length} 条隧道配置到\n$path')));
+                  }
+                },
+                icon: const Icon(Icons.upload_file_rounded, size: 18),
+                label: const Text('导出配置'),
+              ),
+              FilledButton.tonalIcon(
+                onPressed: () async {
+                  final picked = await FilePicker.pickFiles(
+                    dialogTitle: '导入隧道配置',
+                    type: FileType.custom,
+                    allowedExtensions: ['json'],
+                  );
+                  final path = picked.isEmpty ? null : picked.first.path;
+                  if (path == null) return;
+                  try {
+                    final json = await File(path).readAsString();
+                    final n = await app.importConfigsJson(json);
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('成功导入 $n 条隧道配置')));
+                    }
+                  } catch (e) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                          content: Text('导入失败：$e'),
+                          backgroundColor: Theme.of(context).colorScheme.error));
+                    }
+                  }
+                },
+                icon: const Icon(Icons.download_rounded, size: 18),
+                label: const Text('导入配置'),
+              ),
+            ]),
+          ],
+        ),
+        const SizedBox(height: 14),
+
         // ---------- 关于 ----------
         _Section(
           title: '关于',
@@ -332,7 +409,7 @@ class _CfTokenEditorState extends State<_CfTokenEditor> {
         decoration: InputDecoration(
           labelText: 'API Token',
           prefixIcon: const Icon(Icons.key_rounded),
-          helperText: '在 Cloudflare 控制台 → My Profile → API Tokens 创建，权限选 Zone:Read + DNS:Edit',
+          helperText: '创建步骤：Cloudflare 控制台 → 右上角头像 → My Profile → API Tokens → Create Token → 「Edit zone DNS」模板 → 选择域名 Zone → 勾选 Zone:Read + DNS:Edit 权限 → 创建后粘贴到此处。Token 加密存储在本机（Windows DPAPI / Android Keystore）。',
           suffixIcon: IconButton(
             icon: Icon(_reveal ? Icons.visibility_off_outlined : Icons.visibility_outlined,
                 size: 18),

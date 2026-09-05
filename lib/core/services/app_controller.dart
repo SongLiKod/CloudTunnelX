@@ -1,8 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../models/cloudflare.dart';
 import '../models/log_entry.dart';
@@ -28,6 +30,9 @@ class AppController extends ChangeNotifier {
 
   static const _cfTokenKey = 'cf_api_token';
 
+  /// 安全存储（Windows DPAPI / Android Keystore 加密），用于存放 API Token
+  static const _secureStorage = FlutterSecureStorage();
+
   bool _bootRestored = false;
 
   AppController({
@@ -47,18 +52,46 @@ class AppController extends ChangeNotifier {
       tunnels.addListener(_syncForegroundService);
       FlutterForegroundTask.addTaskDataCallback(_onTaskData);
     }
-    // 从持久化存储恢复 Cloudflare API Token
-    cf.setToken(repo.getSetting<String>(_cfTokenKey));
+    // 从安全存储恢复 Cloudflare API Token（异步，完成后自动迁移旧明文）
+    _loadCfToken();
   }
 
-  /// 保存并验证 Cloudflare API Token（域名管理所需）
+  /// 从安全存储读取 Token；若安全存储为空但 hive 中存在旧版明文，则迁移过去
+  Future<void> _loadCfToken() async {
+    try {
+      var token = await _secureStorage.read(key: _cfTokenKey);
+      if ((token == null || token.isEmpty) &&
+          repo.getSetting<String>(_cfTokenKey) != null) {
+        token = repo.getSetting<String>(_cfTokenKey);
+        if (token != null && token.isNotEmpty) {
+          await _secureStorage.write(key: _cfTokenKey, value: token);
+          await repo.setSetting(_cfTokenKey, null);
+        }
+      }
+      if (token != null && token.isNotEmpty) cf.setToken(token);
+    } catch (_) {
+      // 安全存储不可用时回退到旧的明文读取，保证功能可用
+      cf.setToken(repo.getSetting<String>(_cfTokenKey));
+    }
+  }
+
+  /// 保存并验证 Cloudflare API Token（域名管理所需），Token 加密存入安全存储
   Future<bool> saveCfToken(String token) async {
-    await repo.setSetting(_cfTokenKey, token.trim());
-    cf.setToken(token);
+    final t = token.trim();
+    try {
+      await _secureStorage.write(key: _cfTokenKey, value: t);
+      await repo.setSetting(_cfTokenKey, null); // 清除历史明文
+    } catch (_) {
+      await repo.setSetting(_cfTokenKey, t); // 安全存储不可用时的兜底
+    }
+    cf.setToken(t);
     return cf.verifyToken();
   }
 
   Future<void> clearCfToken() async {
+    try {
+      await _secureStorage.delete(key: _cfTokenKey);
+    } catch (_) {}
     await repo.setSetting(_cfTokenKey, null);
     cf.setToken(null);
   }
@@ -164,11 +197,8 @@ class AppController extends ChangeNotifier {
       // DNS 托管校验（需求 3.5）
       final sd = (subdomain ?? '').trim();
       if (!skipDnsCheck && sd.isNotEmpty) {
-        final parts = sd.split('.');
         // 取最后两段作为根域名（如 sub.app.example.com → example.com）
-        final root = parts.length >= 2
-            ? parts.sublist(parts.length - 2).join('.')
-            : sd;
+        final root = ValidationService.rootDomainOf(sd);
         final managed = await validation.domainManagedByCloudflare(root);
         if (!managed) {
           return (null, ValidationResult([
@@ -207,19 +237,25 @@ class AppController extends ChangeNotifier {
     return (c, const ValidationResult([]));
   }
 
+  /// 在 zone 列表中为子域名挑选最长后缀匹配（可单测）
+  /// 例：a.app.example.com 优先命中 app.example.com 而非 example.com
+  static CfZone? bestZoneFor(String subdomain, List<CfZone> zones) {
+    CfZone? zone;
+    for (final z in zones) {
+      if (subdomain == z.name || subdomain.endsWith('.${z.name}')) {
+        if (zone == null || z.name.length > zone.name.length) zone = z;
+      }
+    }
+    return zone;
+  }
+
   /// 通过 Cloudflare API 创建/更新 DNS CNAME 路由，把 `subdomain` 指向隧道
   /// 返回 true 表示 API 已处理；false 表示需回退到 cloudflared 命令行方式
   Future<bool> _routeDnsViaApi(String subdomain, String tunnelUuid) async {
     if (!cf.configured) return false;
     try {
       final zones = await cf.listZones();
-      // 匹配最长后缀的 zone（如 a.app.example.com 优先命中 app.example.com 而非 example.com）
-      CfZone? zone;
-      for (final z in zones) {
-        if (subdomain == z.name || subdomain.endsWith('.${z.name}')) {
-          if (zone == null || z.name.length > zone.name.length) zone = z;
-        }
-      }
+      final zone = bestZoneFor(subdomain, zones);
       if (zone == null) return false;
 
       final target = '$tunnelUuid.cfargotunnel.com';
@@ -269,8 +305,42 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> deleteTunnel(TunnelConfig c) async {
+    // 同步清理 DNS 路由，避免残留指向已删除隧道的孤儿 CNAME
+    await _cleanupTunnelDns(c);
     await tunnels.deleteNamedTunnel(c);
     await repo.deleteTunnel(c.id);
+  }
+
+  /// 删除隧道对应的 DNS CNAME 记录（仅在已配置 API Token 时可执行）
+  Future<void> _cleanupTunnelDns(TunnelConfig c) async {
+    final sd = (c.subdomain ?? '').trim();
+    if (sd.isEmpty || !cf.configured || c.isNamedTokenMode) return;
+    try {
+      final zones = await cf.listZones();
+      final zone = bestZoneFor(sd, zones);
+      if (zone == null) return;
+      final records = await cf.listDnsRecords(zone.id, type: 'CNAME');
+      for (final r in records) {
+        if (r.name == sd && r.content == '$sd.cfargotunnel.com') {
+          await cf.deleteDnsRecord(zone.id, r.id);
+          logs.log(
+              tunnelId: c.id,
+              tunnelName: c.name,
+              protocol: c.protocol,
+              level: LogLevel.info,
+              message: '已清理 DNS 路由记录：$sd');
+        }
+      }
+    } catch (e) {
+      // DNS 清理失败不阻塞隧道删除，仅记录提示
+      logs.log(
+          tunnelId: c.id,
+          tunnelName: c.name,
+          protocol: c.protocol,
+          level: LogLevel.warn,
+          message: 'DNS 路由记录清理失败：$e',
+          fixHint: '可到「域名管理」页手动删除对应的 CNAME 记录。');
+    }
   }
 
   Future<void> startTunnel(TunnelConfig c) => tunnels.start(c);
@@ -287,5 +357,50 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> stopAll() => tunnels.stopAll();
+
+  /// 通过 Cloudflare API 查询隧道当前边缘连接数（需求：连接状态可视化）
+  Future<int?> tunnelConnections(String uuid) async {
+    if (!cf.configured) return null;
+    try {
+      final list = await cf.listTunnels(uuid: uuid);
+      if (list.isEmpty) return 0;
+      return list.first.connections;
+    } catch (e) {
+      logs.log(
+          tunnelId: 'system',
+          tunnelName: '连接状态查询',
+          level: LogLevel.warn,
+          message: '查询隧道边缘连接数失败：$e');
+      return null;
+    }
+  }
+
+  /// 导出全部隧道配置为 JSON 字符串（备份/迁移）
+  String exportConfigsJson() {
+    final list = repo.loadTunnels().map((c) => c.toJson()).toList();
+    return const JsonEncoder.withIndent('  ')
+        .convert({'app': 'CloudTunnelX', 'version': 1, 'tunnels': list});
+  }
+
+  /// 从 JSON 字符串导入隧道配置，返回导入成功的条数；格式非法时抛异常
+  Future<int> importConfigsJson(String content) async {
+    final root = jsonDecode(content);
+    if (root is! Map || root['tunnels'] is! List) {
+      throw const FormatException('非法的配置文件：缺少 tunnels 列表');
+    }
+    var count = 0;
+    for (final item in root['tunnels'] as List) {
+      try {
+        final c = TunnelConfig.fromJson((item as Map).cast<String, dynamic>());
+        if (c.id.isEmpty) continue;
+        await repo.saveTunnel(c);
+        tunnels.registerConfig(c);
+        count++;
+      } catch (_) {
+        // 单条记录损坏不影响其余导入
+      }
+    }
+    return count;
+  }
 }
 

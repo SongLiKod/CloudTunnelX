@@ -25,6 +25,11 @@ class TunnelService extends ChangeNotifier {
   final Map<String, int> _metricPorts = {};
   final Map<String, List<int>> _retrySchedule = {};
   final Map<String, bool> _userStop = {};
+  final Map<String, List<TrafficPoint>> _trafficSeries = {};
+  final Map<String, int> _prevBytes = {};
+
+  /// 流量时序采样上限（5s 一次，约覆盖 10 分钟）
+  static const int _maxSeriesPoints = 120;
 
   /// 最近一次临时隧道 id（快速操作入口）
   String? lastQuickTunnelId;
@@ -43,6 +48,10 @@ class TunnelService extends ChangeNotifier {
 
   TunnelConfig? configOf(String id) => _configs[id];
   TunnelRuntime? runtimeOf(String id) => _runtimes[id];
+
+  /// 流量时序采样（每 5s 一点，用于流量曲线展示）
+  List<TrafficPoint> trafficSeries(String id) =>
+      List.unmodifiable(_trafficSeries[id] ?? const []);
 
   TunnelStatus statusOf(String id) => _runtimes[id]?.status ?? TunnelStatus.stopped;
 
@@ -218,6 +227,8 @@ class TunnelService extends ChangeNotifier {
     _userStop[id] = true;
     _metricTimers[id]?.cancel();
     _metricTimers[id] = null;
+    _trafficSeries.remove(id);
+    _prevBytes.remove(id);
     final p = _processes.remove(id);
     if (p != null) {
       try {
@@ -365,6 +376,16 @@ class TunnelService extends ChangeNotifier {
         rt.bytesCount = bytes;
       });
     }
+    // 流量时序采样：记录本周期增量字节数（计数器重置时钳制为 0）
+    final prev = _prevBytes[id] ?? bytes;
+    final delta = bytes - prev;
+    _prevBytes[id] = bytes;
+    final series = _trafficSeries.putIfAbsent(id, () => []);
+    series.add(TrafficPoint(
+        time: DateTime.now(), bytes: delta < 0 ? 0 : delta));
+    if (series.length > _maxSeriesPoints) {
+      series.removeRange(0, series.length - _maxSeriesPoints);
+    }
   }
 
   // ---------- 工具 ----------
@@ -383,6 +404,8 @@ class TunnelService extends ChangeNotifier {
     _configs.remove(id);
     _runtimes.remove(id);
     _metricTimers[id]?.cancel();
+    _trafficSeries.remove(id);
+    _prevBytes.remove(id);
     notifyListeners();
   }
 

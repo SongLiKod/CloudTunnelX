@@ -197,3 +197,72 @@ IconData logIcon(LogLevel level) => switch (level) {
       LogLevel.success => Icons.check_circle_outline_rounded,
       LogLevel.info => Icons.info_outline_rounded,
     };
+
+/// 流量历史迷你曲线（CustomPaint 绘制，无第三方依赖）
+class TrafficSparkline extends StatelessWidget {
+  final List<TrafficPoint> points;
+  final double height;
+  const TrafficSparkline({super.key, required this.points, this.height = 48});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('流量速率（近 ${points.length * 5}s）',
+            style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
+        const SizedBox(height: 4),
+        SizedBox(
+          height: height,
+          child: CustomPaint(
+            size: Size(double.infinity, height),
+            painter: _SparklinePainter(points, scheme.primary),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SparklinePainter extends CustomPainter {
+  final List<TrafficPoint> points;
+  final Color color;
+  _SparklinePainter(this.points, this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.isEmpty || size.width <= 0 || size.height <= 0) return;
+    final maxB = points.map((p) => p.bytes).fold<int>(1, (a, b) => b > a ? b : a);
+    final line = Paint()
+      ..color = color
+      ..strokeWidth = 1.6
+      ..style = PaintingStyle.stroke;
+    final fill = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [color.withValues(alpha: 0.25), color.withValues(alpha: 0.02)],
+      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
+
+    double x(int i) => points.length == 1
+        ? 0
+        : i * size.width / (points.length - 1);
+    double y(int v) => size.height - (v / maxB) * (size.height - 4) - 2;
+
+    final path = Path()..moveTo(x(0), y(points[0].bytes));
+    for (var i = 1; i < points.length; i++) {
+      path.lineTo(x(i), y(points[i].bytes));
+    }
+    canvas.drawPath(path, line);
+
+    final fillPath = Path.from(path)
+      ..lineTo(x(points.length - 1), size.height)
+      ..lineTo(x(0), size.height)
+      ..close();
+    canvas.drawPath(fillPath, fill);
+  }
+
+  @override
+  bool shouldRepaint(_SparklinePainter old) => old.points != points;
+}

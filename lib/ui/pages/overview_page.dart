@@ -198,6 +198,16 @@ class _TunnelCard extends StatelessWidget {
               CopyButton(value: rt.accessHint!, tooltip: '复制客户端接入命令'),
             ]),
           ],
+          if (status == TunnelStatus.running) ...[
+            Builder(builder: (context) {
+              final series = app.tunnels.trafficSeries(c.id);
+              if (series.length < 2) return const SizedBox.shrink();
+              return Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: TrafficSparkline(points: series),
+              );
+            }),
+          ],
           if (status == TunnelStatus.error && rt != null) ...[
             const SizedBox(height: 10),
             _ErrorRow(runtime: rt),
