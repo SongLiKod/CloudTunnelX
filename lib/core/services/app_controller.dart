@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -31,6 +32,16 @@ class AppController extends ChangeNotifier {
   final ValidationService validation = ValidationService();
   final AppUpdater updater = AppUpdater();
 
+  /// 外观主题：浅色 / 深色 / 跟随系统
+  ThemeMode _themeMode = ThemeMode.system;
+  ThemeMode get themeMode => _themeMode;
+
+  void setThemeMode(ThemeMode mode) {
+    _themeMode = mode;
+    repo.setSetting('theme_mode', mode.name);
+    notifyListeners();
+  }
+
   static const _cfTokenKey = 'cf_api_token';
 
   /// 安全存储（Windows DPAPI / Android Keystore 加密），用于存放 API Token
@@ -54,6 +65,12 @@ class AppController extends ChangeNotifier {
     if (!kIsWeb && Platform.isAndroid) {
       tunnels.addListener(_syncForegroundService);
       FlutterForegroundTask.addTaskDataCallback(_onTaskData);
+    }
+    // 恢复外观主题偏好（默认跟随系统）
+    final savedTheme = repo.getSetting<String>('theme_mode');
+    if (savedTheme != null) {
+      _themeMode = ThemeMode.values.firstWhere((e) => e.name == savedTheme,
+          orElse: () => ThemeMode.system);
     }
     // 从安全存储恢复 Cloudflare API Token（异步，完成后自动迁移旧明文）
     _loadCfToken();
