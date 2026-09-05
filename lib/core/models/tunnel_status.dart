@@ -40,3 +40,13 @@ class TunnelRuntime {
   Duration? get uptime =>
       startedAt == null ? null : DateTime.now().difference(startedAt!);
 }
+
+/// 流量时序采样点（用于流量曲线展示）
+class TrafficPoint {
+  final DateTime time;
+
+  /// 本采样周期内传输字节数（增量）
+  final int bytes;
+
+  const TrafficPoint({required this.time, required this.bytes});
+}

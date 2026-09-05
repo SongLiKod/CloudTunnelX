@@ -141,6 +141,21 @@ class _NamedCard extends StatelessWidget {
           ],
           const SizedBox(height: 10),
           Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+            if (c.tunnelUuid != null && app.cf.configured)
+              TextButton.icon(
+                onPressed: () async {
+                  final n = await app.tunnelConnections(c.tunnelUuid!);
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    content: Text(n == null
+                        ? '查询边缘连接失败，请检查 API Token 权限或网络'
+                        : '隧道「${c.name}」当前边缘连接数：$n'),
+                    duration: const Duration(seconds: 3),
+                  ));
+                },
+                icon: const Icon(Icons.cloud_done_outlined, size: 16),
+                label: const Text('边缘连接'),
+              ),
             TextButton.icon(
               onPressed: () => _showEditDialog(context, c),
               icon: const Icon(Icons.edit_outlined, size: 16),

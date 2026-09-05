@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
 import 'core/services/app_controller.dart';
@@ -33,6 +34,13 @@ Future<void> main() async {
 
   final binaries = BinaryManager();
   final logs = LogService();
+  // 日志落盘：应用支持目录下的滚动日志文件（失败不阻塞启动）
+  if (!kIsWeb) {
+    try {
+      final dir = await getApplicationSupportDirectory();
+      logs.initLogDir('${dir.path}${Platform.pathSeparator}logs');
+    } catch (_) {}
+  }
   final tunnels = TunnelService(binaries: binaries, logs: logs);
   final cf = CloudflareService();
   final app = AppController(

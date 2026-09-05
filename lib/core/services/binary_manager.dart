@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -171,6 +172,45 @@ class BinaryManager extends ChangeNotifier {
     _binaryPath = target;
     await detectVersion();
     return target;
+  }
+
+  /// 版本号逐段比较：a 是否比 b 新（提取为静态方法便于单测）
+  static bool isNewerVersion(String a, String b) {
+    final pa = a.split('.').map(int.tryParse).toList();
+    final pb = b.split('.').map(int.tryParse).toList();
+    for (var i = 0; i < pa.length && i < pb.length; i++) {
+      final x = pa[i] ?? 0, y = pb[i] ?? 0;
+      if (x != y) return x > y;
+    }
+    return pa.length > pb.length;
+  }
+
+  /// 查询 GitHub 最新发布的 cloudflared 版本号（失败返回 null）
+  Future<String?> fetchLatestVersion() async {
+    try {
+      final res = await http
+          .get(
+            Uri.parse(
+                'https://api.github.com/repos/cloudflare/cloudflared/releases/latest'),
+            headers: {'Accept': 'application/vnd.github+json'},
+          )
+          .timeout(const Duration(seconds: 15));
+      if (res.statusCode != 200) return null;
+      final tag = (jsonDecode(res.body) as Map<String, dynamic>)['tag_name']
+              as String? ??
+          '';
+      final m = RegExp(r'(\d{4}\.\d+\.\d+|\d+\.\d+\.\d+)').firstMatch(tag);
+      return m?.group(1);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 检查内核更新：有新版本时返回最新版本号，否则返回 null
+  Future<String?> checkUpdate() async {
+    final latest = await fetchLatestVersion();
+    if (latest == null || _version == null) return null;
+    return isNewerVersion(latest, _version!) ? latest : null;
   }
 
   Future<bool> hasLoginCert() async {
