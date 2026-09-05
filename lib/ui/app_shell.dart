@@ -58,7 +58,6 @@ class _AppShellState extends State<AppShell> {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
         ),
-        _RunningBadge(running: running),
       ]),
     );
 
@@ -70,22 +69,28 @@ class _AppShellState extends State<AppShell> {
                 child: Column(children: [
                   header,
                   Expanded(
-                    child: NavigationRail(
-                      selectedIndex: _index,
-                      onDestinationSelected: (i) => setState(() => _index = i),
-                      labelType: NavigationRailLabelType.all,
-                      destinations: [
-                        for (final it in _items)
-                          NavigationRailDestination(
-                            icon: Badge(
-                              isLabelVisible: false,
-                              child: Icon(it.$1),
-                            ),
-                            selectedIcon: Icon(it.$2),
-                            label: Text(it.$3, style: const TextStyle(fontSize: 12)),
-                          ),
-                      ],
-                    ),
+                    child: Column(children: [
+                      Expanded(
+                        child: NavigationRail(
+                          selectedIndex: _index,
+                          onDestinationSelected: (i) => setState(() => _index = i),
+                          labelType: NavigationRailLabelType.all,
+                          destinations: [
+                            for (final it in _items)
+                              NavigationRailDestination(
+                                icon: Badge(
+                                  isLabelVisible: false,
+                                  child: Icon(it.$1),
+                                ),
+                                selectedIcon: Icon(it.$2),
+                                label: Text(it.$3,
+                                    style: const TextStyle(fontSize: 12)),
+                              ),
+                          ],
+                        ),
+                      ),
+                      _RunningBadge(running: running),
+                    ]),
                   ),
                 ]),
               ),
@@ -121,18 +126,23 @@ class _RunningBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = running > 0 ? Colors.green.shade300 : Colors.grey.shade500;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.5)),
-      ),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(Icons.link_rounded, size: 13, color: color),
-        const SizedBox(width: 5),
-        Text('运行 $running',
-            style: TextStyle(fontSize: 12, color: color)),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: color,
+            boxShadow: [
+              BoxShadow(color: color.withValues(alpha: 0.6), blurRadius: 4),
+            ],
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(running > 0 ? '运行 $running' : '空闲',
+            style: TextStyle(fontSize: 10, color: color)),
       ]),
     );
   }
