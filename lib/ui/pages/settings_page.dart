@@ -68,7 +68,12 @@ class _SettingsPageState extends State<SettingsPage> {
                   bm.ready
                       ? '内核就绪 · ${bm.version ?? '版本检测中'}'
                           '${isAndroid ? '（随应用内置）' : ''}\n${bm.binaryPath}'
-                      : '未检测到 cloudflared 内核，请${isAndroid ? '按下方指引将内核内置到 APK 后重新构建安装' : '一键下载'}',
+                      : isAndroid
+                          ? '未检测到内置内核：\n'
+                              '目录 ${bm.androidNativeLibDir ?? '(获取失败，需确认原生端已注册)'
+                                  } 下${bm.androidKernelPresent ? '文件异常' : '未找到 libcloudflared.so'}，\n'
+                              '请按下方指引内置到 APK 后重新构建安装'
+                          : '未检测到 cloudflared 内核，请一键下载',
                   style: const TextStyle(fontSize: 13),
                 ),
               ),

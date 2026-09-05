@@ -145,14 +145,19 @@ class TunnelService extends ChangeNotifier {
         statusOf(c.id) == TunnelStatus.starting) {
       return;
     }
-    final binary = binaries.binaryPath;
+    // 启动前总是重新解析内核：main() 里的 resolveBinary 是异步的，首次启动时
+    // binaryPath 可能尚未赋值，直接用缓存会误报「未找到内核」（Android 上还
+    // 依赖平台通道返回 nativeLibraryDir，竞态窗口更大）。
+    final binary = await binaries.resolveBinary();
     if (binary == null) {
       logs.log(
           tunnelId: c.id,
           tunnelName: c.name,
           protocol: c.protocol,
           level: LogLevel.error,
-          message: '未找到 cloudflared 内核，请到「设置」页一键下载或导入内核');
+          message: Platform.isAndroid
+              ? '未找到内置 cloudflared 内核：请确认 APK 已包含 jniLibs/arm64-v8a/libcloudflared.so（arm64 真机；x86 模拟器不支持），并到「设置」页点「重新检测」'
+              : '未找到 cloudflared 内核，请到「设置」页一键下载或导入内核');
       return;
     }
 

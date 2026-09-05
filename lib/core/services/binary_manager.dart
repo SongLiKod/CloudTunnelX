@@ -25,11 +25,17 @@ class BinaryManager extends ChangeNotifier {
   bool _downloading = false;
   double _progress = 0;
 
+  // Android 诊断信息：内置内核目录及是否存在（供设置页展示失败原因）
+  String? _androidLibDir;
+  bool _androidKernelPresent = false;
+
   String? get binaryPath => _binaryPath;
   String? get version => _version;
   bool get downloading => _downloading;
   double get progress => _progress;
   bool get ready => _binaryPath != null;
+  String? get androidNativeLibDir => _androidLibDir;
+  bool get androidKernelPresent => _androidKernelPresent;
 
   /// 内核安装目录：`<AppSupport>/bin`（技术文档 4.3）
   Future<Directory> binDir() async {
@@ -54,11 +60,13 @@ class BinaryManager extends ChangeNotifier {
 
     // 0) Android：内置内核（nativeLibraryDir，可执行且只读）
     if (Platform.isAndroid) {
-      final libDir = await _androidNativeLibDir();
+      _androidLibDir = await _androidNativeLibDir();
+      final libDir = _androidLibDir;
       if (libDir != null) {
         final lib = '$libDir${Platform.pathSeparator}$_androidLib';
         final f = File(lib);
-        if (f.existsSync() && f.lengthSync() > 1024) {
+        _androidKernelPresent = f.existsSync() && f.lengthSync() > 1024;
+        if (_androidKernelPresent) {
           _binaryPath = lib;
           await detectVersion();
           return lib;
