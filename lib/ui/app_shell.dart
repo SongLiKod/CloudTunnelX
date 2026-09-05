@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/models/tunnel_config.dart';
+import '../core/models/tunnel_status.dart';
 import '../core/services/app_controller.dart';
 import 'pages/domains_page.dart';
 import 'pages/logs_page.dart';
@@ -30,18 +32,19 @@ class _AppShellState extends State<AppShell> {
   ];
 
   static const _items = [
-    (Icons.dashboard_outlined, Icons.dashboard_rounded, '总览'),
-    (Icons.bolt_outlined, Icons.bolt_rounded, '临时穿透'),
-    (Icons.dns_outlined, Icons.dns_rounded, '固定穿透'),
-    (Icons.public_outlined, Icons.public_rounded, '域名管理'),
-    (Icons.terminal_outlined, Icons.terminal_rounded, '日志'),
-    (Icons.settings_outlined, Icons.settings_rounded, '设置'),
+    (Icons.dashboard_outlined, Icons.dashboard_rounded, '总览', null),
+    (Icons.bolt_outlined, Icons.bolt_rounded, '临时穿透', TunnelMode.quick),
+    (Icons.dns_outlined, Icons.dns_rounded, '固定穿透', TunnelMode.named),
+    (Icons.public_outlined, Icons.public_rounded, '域名管理', null),
+    (Icons.terminal_outlined, Icons.terminal_rounded, '日志', null),
+    (Icons.settings_outlined, Icons.settings_rounded, '设置', null),
   ];
 
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppController>();
     final running = app.tunnels.runningCount;
+    final activeCounts = _activeByMode(app);
     final wide = MediaQuery.of(context).size.width >= 860;
 
     final title = '云隧通 CloudTunnelX';
@@ -76,10 +79,8 @@ class _AppShellState extends State<AppShell> {
                           destinations: [
                             for (final it in _items)
                               NavigationRailDestination(
-                                icon: Badge(
-                                  isLabelVisible: false,
-                                  child: Icon(it.$1),
-                                ),
+                                icon: _NavIcon(
+                                    it: it, activeCounts: activeCounts),
                                 selectedIcon: Icon(it.$2),
                                 label: Text(it.$3,
                                     style: const TextStyle(fontSize: 12)),
@@ -107,12 +108,45 @@ class _AppShellState extends State<AppShell> {
               destinations: [
                 for (final it in _items)
                   NavigationDestination(
-                    icon: Icon(it.$1),
+                    icon: _NavIcon(it: it, activeCounts: activeCounts),
                     selectedIcon: Icon(it.$2),
                     label: it.$3,
                   ),
               ],
             ),
+    );
+  }
+
+  /// 统计各穿透模式下处于活跃状态（运行/启动/重连）的隧道数量，用于导航项角标
+  Map<TunnelMode, int> _activeByMode(AppController app) {
+    final counts = <TunnelMode, int>{TunnelMode.quick: 0, TunnelMode.named: 0};
+    for (final c in app.tunnels.all) {
+      final s = app.tunnels.statusOf(c.id);
+      final active = s == TunnelStatus.running ||
+          s == TunnelStatus.starting ||
+          s == TunnelStatus.reconnecting;
+      if (active) counts[c.mode] = counts[c.mode]! + 1;
+    }
+    return counts;
+  }
+}
+
+/// 导航项图标：对应穿透模式有运行中隧道时，显示绿色数字角标（醒目样式）
+class _NavIcon extends StatelessWidget {
+  final (IconData, IconData, String, TunnelMode?) it;
+  final Map<TunnelMode, int> activeCounts;
+  const _NavIcon({required this.it, required this.activeCounts});
+
+  @override
+  Widget build(BuildContext context) {
+    final count = it.$4 == null ? 0 : (activeCounts[it.$4] ?? 0);
+    final icon = Icon(it.$1);
+    if (count == 0) return icon;
+    return Badge(
+      label: Text('$count'),
+      backgroundColor: Colors.green.shade400,
+      textColor: Colors.black87,
+      child: icon,
     );
   }
 }
