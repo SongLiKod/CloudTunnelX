@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
+import '../models/protocol_type.dart';
 import '../models/tunnel_config.dart';
 
 class ValidationIssue {
@@ -25,6 +26,13 @@ class ValidationService {
 
   ValidationResult validateQuick(TunnelConfig c) {
     final issues = <ValidationIssue>[];
+    // cloudflared 快速隧道（free-form）origin 仅支持 http/https：
+    // WebSocket 服务本质是 HTTP 服务器（走协议升级），可正常穿透；
+    // 但四层 TCP 无法通过快速隧道暴露，必须使用固定隧道 + Access 接入
+    if (c.protocol == ProtocolType.tcp) {
+      issues.add(const ValidationIssue(
+          '临时隧道不支持 TCP：cloudflared 快速隧道仅支持 HTTP/HTTPS/WebSocket。TCP（SSH/RDP/数据库）请创建固定隧道后，在客户端用 cloudflared access tcp 接入。'));
+    }
     issues.addAll(_validateBasic(c));
     return ValidationResult(issues);
   }
@@ -125,17 +133,18 @@ class ValidationService {
   }
 
   /// 域名 DNS 托管校验：通过 DoH 查询 NS 记录是否指向 Cloudflare
-  Future<bool> domainManagedByCloudflare(String domain) async {
+  /// 返回 true=已托管；false=确认未托管；null=网络异常无法判定
+  Future<bool?> domainManagedByCloudflare(String domain) async {
     try {
       final res = await http.get(
         Uri.parse('https://cloudflare-dns.com/dns-query?name=$domain&type=NS'),
         headers: {'accept': 'application/dns-json'},
       ).timeout(const Duration(seconds: 5));
-      if (res.statusCode != 200) return false;
+      if (res.statusCode != 200) return null;
       final body = res.body.toLowerCase();
       return body.contains('.ns.cloudflare.com');
     } catch (_) {
-      return false;
+      return null;
     }
   }
 
@@ -168,7 +177,11 @@ class ValidationService {
     if (sd.isNotEmpty) {
       final root = ValidationService.rootDomainOf(sd);
       final managed = await domainManagedByCloudflare(root);
-      if (!managed) {
+      if (managed == null) {
+        issues.add(ValidationIssue(
+            '无法确认域名 $root 的 DNS 托管状态（网络异常，DoH 查询不可达）',
+            blocking: false));
+      } else if (!managed) {
         issues.add(ValidationIssue(
             '域名 $root 的 NS 记录未指向 Cloudflare：请先在域名注册商处将 DNS 托管迁移至 Cloudflare'));
       }

@@ -13,7 +13,13 @@ class OverviewPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppController>();
-    final all = app.tunnels.all;
+    // 动态排序：运行中/启动中/重连中的隧道置顶，停止/异常下沉；同组按创建时间倒序
+    final all = [...app.tunnels.all]..sort((a, b) {
+        final ra = _activeRank(app.tunnels.statusOf(a.id));
+        final rb = _activeRank(app.tunnels.statusOf(b.id));
+        if (ra != rb) return ra.compareTo(rb);
+        return b.createdAt.compareTo(a.createdAt);
+      });
     final runningList =
         all.where((c) => app.tunnels.statusOf(c.id) == TunnelStatus.running);
 
@@ -79,6 +85,14 @@ class OverviewPage extends StatelessWidget {
       ],
     );
   }
+
+  /// 活跃度排序权重：运行中/启动中/重连中优先置顶
+  static int _activeRank(TunnelStatus s) => switch (s) {
+        TunnelStatus.running => 0,
+        TunnelStatus.starting => 1,
+        TunnelStatus.reconnecting => 2,
+        _ => 3,
+      };
 
   static String _fmtDuration(Duration d) {
     final h = d.inHours, m = d.inMinutes % 60;

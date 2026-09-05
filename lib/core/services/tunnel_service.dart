@@ -75,6 +75,9 @@ class TunnelService extends ChangeNotifier {
     final url = '${c.protocol.scheme}://${c.localHost}:${c.localPort}';
     if (c.mode == TunnelMode.quick) {
       // 临时隧道：cloudflared tunnel --url 协议://IP:端口
+      // cloudflared 快速隧道 origin 仅接受 http/https：
+      // WebSocket 服务本质是 HTTP 服务器（协议升级），故统一用 http scheme
+      final url = '${c.protocol.isWeb ? 'http' : 'tcp'}://${c.localHost}:${c.localPort}';
       return [
         'tunnel',
         '--url',

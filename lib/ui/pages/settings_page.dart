@@ -325,9 +325,116 @@ class _SettingsPageState extends State<SettingsPage> {
           title: '关于',
           icon: Icons.info_outline_rounded,
           children: [
-            const Text('云隧通 CloudTunnelX',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 4),
+            Row(children: [
+              const Expanded(
+                child: Text('云隧通 CloudTunnelX',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+              ),
+              TextButton.icon(
+                onPressed: app.updater.checking
+                    ? null
+                    : () async {
+                        await app.checkAppUpdate();
+                        if (context.mounted && app.updater.error != null) {
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                              content: Text('检查更新失败：${app.updater.error}'),
+                              backgroundColor:
+                                  Theme.of(context).colorScheme.error));
+                        }
+                      },
+                icon: app.updater.checking
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.system_update_alt_rounded, size: 18),
+                label: const Text('检查更新'),
+              ),
+            ]),
+            const SizedBox(height: 2),
+            Text('当前版本：${app.updater.currentVersion ?? '--'}',
+                style: Theme.of(context).textTheme.bodySmall),
+            if (app.updater.hasUpdate) ...[
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .primaryContainer
+                      .withValues(alpha: 0.4),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [
+                        Icon(Icons.new_releases_rounded,
+                            size: 18,
+                            color: Theme.of(context).colorScheme.primary),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                              '发现新版本 v${app.updater.latestVersion}',
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w700, fontSize: 14)),
+                        ),
+                      ]),
+                      if (app.updater.releaseNotes != null) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          app.updater.releaseNotes!,
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(height: 1.4),
+                        ),
+                      ],
+                      const SizedBox(height: 10),
+                      if (app.updater.downloading) ...[
+                        LinearProgressIndicator(
+                            value: app.updater.progress, minHeight: 5),
+                        const SizedBox(height: 4),
+                        Text(
+                            '下载中 ${(app.updater.progress * 100).toStringAsFixed(0)}%',
+                            style: Theme.of(context).textTheme.bodySmall),
+                      ] else
+                        FilledButton.icon(
+                          onPressed: () async {
+                            try {
+                              await app.upgradeApp();
+                            } catch (e) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                        content: Text('升级失败：$e'),
+                                        backgroundColor: Theme.of(context)
+                                            .colorScheme
+                                            .error));
+                              }
+                            }
+                          },
+                          icon: Icon(isAndroid
+                              ? Icons.open_in_browser_rounded
+                              : Icons.system_update_alt_rounded,
+                              size: 18),
+                          label: Text(isAndroid
+                              ? '前往下载 APK'
+                              : '立即升级并重启'),
+                        ),
+                    ]),
+              ),
+            ] else if (app.updater.latestVersion != null &&
+                app.updater.error == null) ...[
+              const SizedBox(height: 6),
+              Text('已是最新版本（v${app.updater.latestVersion}）',
+                  style: TextStyle(
+                      color: Colors.green.shade300, fontSize: 12.5)),
+            ],
+            const SizedBox(height: 8),
             Text('零服务器全协议内网穿透工具 · 双端可视化一键隧通内外网',
                 style: Theme.of(context).textTheme.bodySmall),
             const SizedBox(height: 8),

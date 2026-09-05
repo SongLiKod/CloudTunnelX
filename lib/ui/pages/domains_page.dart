@@ -23,6 +23,7 @@ class _DomainsPageState extends State<DomainsPage> {
   final Map<String, List<CfDnsRecord>> _records = {};
   String? _loadError;
   bool _refreshing = false;
+  bool _autoLoading = false;
 
   @override
   void dispose() {
@@ -37,6 +38,14 @@ class _DomainsPageState extends State<DomainsPage> {
 
     if (!cf.configured) {
       return _TokenSetup(app: app, cf: cf);
+    }
+
+    // 首次进入（含从 Token 引导页配置成功后切换过来）自动拉取域名列表
+    if (_zones == null && !_autoLoading && !_refreshing) {
+      _autoLoading = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _refresh();
+      });
     }
 
     return Scaffold(
@@ -119,7 +128,12 @@ class _DomainsPageState extends State<DomainsPage> {
     } catch (e) {
       setState(() => _loadError = e.toString());
     } finally {
-      if (mounted) setState(() => _refreshing = false);
+      if (mounted) {
+        setState(() {
+          _refreshing = false;
+          _autoLoading = false;
+        });
+      }
     }
   }
 
