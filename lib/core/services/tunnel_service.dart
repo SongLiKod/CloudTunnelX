@@ -29,6 +29,7 @@ class TunnelService extends ChangeNotifier {
   final Map<String, List<TrafficPoint>> _trafficSeries = {};
   final Map<String, int> _prevBytes = {};
   final Set<String> _metricsWarned = {};
+  final Set<String> _metricsLogged = {};
 
   /// 流量时序采样上限（5s 一次，约覆盖 10 分钟）
   static const int _maxSeriesPoints = 120;
@@ -436,7 +437,20 @@ class TunnelService extends ChangeNotifier {
         final res = await http
             .get(Uri.parse('http://127.0.0.1:$port/metrics'))
             .timeout(const Duration(seconds: 3));
-        if (res.statusCode == 200) _parseMetrics(id, res.body);
+        if (res.statusCode == 200) {
+          _parseMetrics(id, res.body);
+          // 首次轮询成功记一次摘要日志：若解析结果与预期不符（如计数为 0），
+          // 直接看该条日志即可判断是内核口径还是解析问题
+          if (_metricsLogged.add(id)) {
+            final c = _configs[id];
+            logs.log(
+                tunnelId: id,
+                tunnelName: c?.name ?? '',
+                protocol: c?.protocol,
+                level: LogLevel.info,
+                message: 'metrics 接口正常（${res.body.split('\n').length} 行指标）');
+          }
+        }
       } catch (e) {
         // 静默失败会让人以为统计功能故障：每个隧道只告警一次。
         // 常见原因：Android 未允许明文流量（usesCleartextTraffic）或内核 metrics 未监听。
@@ -461,11 +475,21 @@ class TunnelService extends ChangeNotifier {
       if (line.isEmpty || line.startsWith('#')) continue;
       final parts = line.split(RegExp(r'\s+'));
       if (parts.length < 2) continue;
-      final value = int.tryParse(parts.last);
+      // 用 num 解析：Prometheus 浮点值（如内存类指标 1.2e+06）用 int.tryParse 会失败
+      final value = num.tryParse(parts.last);
       if (value == null) continue;
       final name = parts.first.split('{').first;
-      if (name.contains('requests')) requests += value;
-      if (name.contains('bytes')) bytes += value;
+      // 请求数：只认累计计数器 total_requests（新版/旧版通用），
+      // 避免 concurrent/per_tunnel 等瞬时量把请求数翻倍
+      if (name.contains('total_requests')) requests += value.toInt();
+      // 流量字节：仅累计隧道实际传输字节（QUIC client / 旧版 muxer 压缩字节），
+      // 排除 go_memstats_*、process_* 等内存字节，否则"流量"会虚高畸变
+      if (name.contains('bytes') &&
+          !name.contains('compressed') &&
+          !name.startsWith('go_') &&
+          !name.startsWith('process_')) {
+        bytes += value.toInt();
+      }
     }
     if (requests > 0 || bytes > 0) {
       _upsertRuntime(id, (rt) {

@@ -21,9 +21,25 @@ class MainActivity : FlutterActivity() {
                     "nativeLibraryDir" ->
                         result.success(applicationContext.applicationInfo.nativeLibraryDir)
                     "installApk" -> installApk(call.argument<String>("filePath"), result)
+                    "launcherBadge" -> setLauncherBadge(call.argument<Int>("count") ?: 0, result)
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    /** 启动器图标数字徽标：count=0 移除，否则显示运行中的隧道数量 */
+    private fun setLauncherBadge(count: Int, result: MethodChannel.Result) {
+        try {
+            if (count > 0) {
+                me.leolin.shortcutbadger.ShortcutBadger.applyCount(this, count)
+            } else {
+                me.leolin.shortcutbadger.ShortcutBadger.removeCount(this)
+            }
+            result.success(true)
+        } catch (e: Exception) {
+            // 该 ROM/系统（如 Pixel Android 13+ 仅显示通知点）不支持时静默
+            result.success(false)
+        }
     }
 
     /** 应用内更新：调起系统安装器安装更新 APK（先经 FileProvider 共享给安装器） */

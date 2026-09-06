@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:flutter_app_badger/flutter_app_badger.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 /// Android 前台服务保活（技术文档 5.2.1）：隧道运行期间常驻通知，避免系统查杀
@@ -118,21 +118,17 @@ Future<void> updateForegroundService(int runningCount,
 
 /// 桌面图标徽标缓存：避免重复广播相同数字
 int? _lastBadgeCount;
+const _badgeChannel = MethodChannel('com.cloudtunnelx/native');
 
 /// 同步启动器图标徽标（数字 = 运行中的隧道数量）。
-/// 依赖 ShortcutBadger（flutter_app_badger），各厂商 ROM 支持度不一
-/// （Pixel/部分原生系统 Android 13+ 仅显示通知点，数字徽标可能被忽略）。
-/// 失败静默，不影响隧道功能。
+/// 原生端经 ShortcutBadger 广播适配各厂商 ROM（Pixel/部分原生系统
+/// Android 13+ 仅显示通知点，数字徽标可能被忽略）。失败静默。
 Future<void> updateLauncherBadge(int runningCount) async {
   if (!Platform.isAndroid) return;
   if (_lastBadgeCount == runningCount) return;
   _lastBadgeCount = runningCount;
   try {
-    if (runningCount > 0) {
-      await FlutterAppBadger.updateBadgeCount(runningCount);
-    } else {
-      await FlutterAppBadger.removeBadge();
-    }
+    await _badgeChannel.invokeMethod('launcherBadge', {'count': runningCount});
   } catch (_) {
     // 该 ROM/系统不支持数字徽标时静默忽略
   }
