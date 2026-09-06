@@ -15,6 +15,7 @@ import '../models/protocol_type.dart';
 import '../models/tunnel_config.dart';
 import '../models/tunnel_status.dart';
 import '../../android_service.dart';
+import '../../windows_badge.dart';
 import 'app_updater.dart';
 import 'binary_manager.dart';
 import 'cloudflare_service.dart';
@@ -275,6 +276,8 @@ class AppController extends ChangeNotifier {
     );
     // 启动器图标徽标：数字 = 运行中隧道数量（退出全部隧道后自动移除）
     updateLauncherBadge(tunnels.runningCount);
+    // Windows 任务栏角标：数字 = 运行中隧道数量（任务栏有按钮时可见）
+    updateWindowsTaskbarBadge(tunnels.runningCount);
   }
 
   void _onTaskData(Object data) {

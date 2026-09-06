@@ -9,6 +9,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   system_tray
   url_launcher_windows
   window_manager
+  xue_hua_app_badge
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST

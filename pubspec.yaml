@@ -49,6 +49,7 @@ dependencies:
   url_launcher: ^6.3.1
   qr_flutter: ^4.1.0
   local_notifier: ^0.1.6
+  xue_hua_app_badge: ^2.0.1
 
 dev_dependencies:
   flutter_test:
