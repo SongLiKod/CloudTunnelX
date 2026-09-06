@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/log_entry.dart';
 import '../models/protocol_type.dart';
@@ -27,6 +28,7 @@ class TunnelService extends ChangeNotifier {
   final Map<String, bool> _userStop = {};
   final Map<String, List<TrafficPoint>> _trafficSeries = {};
   final Map<String, int> _prevBytes = {};
+  final Set<String> _metricsWarned = {};
 
   /// 流量时序采样上限（5s 一次，约覆盖 10 分钟）
   static const int _maxSeriesPoints = 120;
@@ -373,12 +375,55 @@ class TunnelService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// `cloudflared tunnel login`（打开浏览器完成授权，等待 cert.pem 落盘）
+  /// 进行中的浏览器授权进程（Android：从输出流解析授权 URL）
+  Process? _loginProcess;
+
+  /// `cloudflared tunnel login`（浏览器授权，等待 cert.pem 落盘）
+  /// 桌面端：内核自动打开系统浏览器；Android 无 xdg-open，改为内嵌运行并从
+  /// 输出流解析授权 URL，再用系统浏览器打开（否则界面无任何反应）。
   Future<void> startLogin() async {
     final binary = binaries.binaryPath;
     if (binary == null) throw StateError('未找到 cloudflared 内核');
-    await Process.start(binary, ['tunnel', 'login'],
-        mode: ProcessStartMode.detached);
+    if (!Platform.isAndroid) {
+      await Process.start(binary, ['tunnel', 'login'],
+          mode: ProcessStartMode.detached);
+      return;
+    }
+    if (_loginProcess != null) return; // 已有登录流程进行中，避免重复进程
+    final process = await Process.start(
+      binary,
+      ['tunnel', 'login'],
+      // Android 无系统证书路径：注入内置 Mozilla CA，否则登录后获取凭证报证书错误
+      environment: {...Platform.environment, 'SSL_CERT_FILE': await binaries.ensureCaBundle()},
+    );
+    _loginProcess = process;
+    void onData(String chunk) {
+      final m = RegExp(
+              r'https://dash\.cloudflare\.com/argotunnel\?callback=\S+')
+          .firstMatch(chunk);
+      if (m != null) {
+        // 打开授权页；用户完成授权后内核自动写 ~/.cloudflared/cert.pem 并退出
+        unawaited(launchUrl(Uri.parse(m.group(0)!),
+            mode: LaunchMode.externalApplication));
+      }
+    }
+
+    process.stdout.transform(utf8.decoder).listen(onData);
+    process.stderr.transform(utf8.decoder).listen(onData);
+    process.exitCode.then((_) {
+      if (identical(_loginProcess, process)) _loginProcess = null;
+    });
+  }
+
+  /// 终止进行中的浏览器授权进程（授权完成/取消后调用，释放后台进程）
+  Future<void> stopLogin() async {
+    final p = _loginProcess;
+    _loginProcess = null;
+    if (p != null) {
+      try {
+        p.kill();
+      } catch (_) {}
+    }
   }
 
   // ---------- metrics 流量统计（需求 3.1 在线时长/流量简要统计） ----------
@@ -392,7 +437,19 @@ class TunnelService extends ChangeNotifier {
             .get(Uri.parse('http://127.0.0.1:$port/metrics'))
             .timeout(const Duration(seconds: 3));
         if (res.statusCode == 200) _parseMetrics(id, res.body);
-      } catch (_) {}
+      } catch (e) {
+        // 静默失败会让人以为统计功能故障：每个隧道只告警一次。
+        // 常见原因：Android 未允许明文流量（usesCleartextTraffic）或内核 metrics 未监听。
+        if (_metricsWarned.add(id)) {
+          final c = _configs[id];
+          logs.log(
+              tunnelId: id,
+              tunnelName: c?.name ?? '',
+              protocol: c?.protocol,
+              level: LogLevel.warn,
+              message: 'metrics 统计接口不可达（流量曲线/统计将不可用）：$e');
+        }
+      }
     });
   }
 

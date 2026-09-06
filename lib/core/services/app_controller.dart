@@ -273,6 +273,8 @@ class AppController extends ChangeNotifier {
       tunnels.runningCount,
       disconnectedCount: disconnected,
     );
+    // 启动器图标徽标：数字 = 运行中隧道数量（退出全部隧道后自动移除）
+    updateLauncherBadge(tunnels.runningCount);
   }
 
   void _onTaskData(Object data) {

@@ -2,17 +2,17 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import 'binary_manager.dart';
 
 /// 应用自身更新检查与升级：
 /// - 通过 GitHub Releases API 获取最新版本（tag 形如 v1.1.0）
 /// - Windows：下载 zip → 解压覆盖 → 自动重启（无需手动替换文件）
-/// - Android：跳转浏览器下载 APK 手动安装（平台限制无法静默安装）
+/// - Android：应用内下载 APK（含进度）→ 直接调起系统安装器，不跳转浏览器
 class AppUpdater extends ChangeNotifier {
   static const _repo = 'SongLiKod/CloudTunnelX';
   static const _apiLatest =
@@ -85,19 +85,26 @@ class AppUpdater extends ChangeNotifier {
     }
   }
 
-  /// 执行升级。Windows 静默替换并重启；
-  /// Android 打开下载页（APK 需用户手动确认安装）。
-  /// Windows 完成前会调用 [onExit] 关闭当前应用进程。
+  /// 执行升级：
+  /// - Windows：下载 zip → 静默替换并重启（完成前调用 [onExit] 关闭当前进程）
+  /// - Android：应用内下载 APK → 调起系统安装器直接安装（首次需授权"安装未知应用"）
   Future<void> downloadAndInstall({VoidCallback? onExit}) async {
     final latest = _latestVersion;
     if (latest == null) throw StateError('暂无可用版本信息，请先检查更新');
 
     if (Platform.isAndroid) {
-      await launchUrl(
-        Uri.parse('https://github.com/$_repo/releases/download/v$latest/'
-            'cloudtunnelx-android-v$latest.apk'),
-        mode: LaunchMode.externalApplication,
+      // 下载到应用缓存目录（原生端 FileProvider 映射该目录）
+      final cacheDir = await getTemporaryDirectory();
+      final apkPath =
+          '${cacheDir.path}${Platform.pathSeparator}cloudtunnelx-v$latest.apk';
+      await _downloadToFile(
+        'https://github.com/$_repo/releases/download/v$latest/'
+        'cloudtunnelx-android-v$latest.apk',
+        apkPath,
       );
+      // 调起系统安装器，应用内直接安装
+      const channel = MethodChannel('com.cloudtunnelx/native');
+      await channel.invokeMethod('installApk', {'filePath': apkPath});
       return;
     }
     if (!Platform.isWindows) {
@@ -109,44 +116,13 @@ class AppUpdater extends ChangeNotifier {
     if (!updDir.existsSync()) updDir.createSync(recursive: true);
     final zipPath =
         '${updDir.path}${Platform.pathSeparator}cloudtunnelx-windows-v$latest.zip';
+    await _downloadToFile(
+      'https://github.com/$_repo/releases/download/v$latest/'
+      'cloudtunnelx-windows-v$latest.zip',
+      zipPath,
+    );
 
-    // 1) 下载发布包（支持进度回调）
-    _downloading = true;
-    _progress = 0;
-    notifyListeners();
-    try {
-      final client = http.Client();
-      final res = await client.send(http.Request(
-          'GET',
-          Uri.parse('https://github.com/$_repo/releases/download/v$latest/'
-              'cloudtunnelx-windows-v$latest.zip')));
-      if (res.statusCode != 200) {
-        client.close();
-        throw HttpException('下载失败 HTTP ${res.statusCode}');
-      }
-      final total = res.contentLength ?? 0;
-      final sink = File(zipPath).openWrite();
-      var received = 0;
-      await for (final chunk in res.stream) {
-        received += chunk.length;
-        sink.add(chunk);
-        if (total > 0) {
-          _progress = received / total;
-          notifyListeners();
-        }
-      }
-      await sink.flush();
-      await sink.close();
-      client.close();
-      if (File(zipPath).lengthSync() < 1024 * 1024) {
-        throw HttpException('下载文件异常，请重试');
-      }
-    } finally {
-      _downloading = false;
-      notifyListeners();
-    }
-
-    // 2) 生成升级脚本并交由独立 cmd 执行，随后退出当前进程：
+    // 生成升级脚本并交由独立 cmd 执行，随后退出当前进程：
     //    等待主进程退出解锁 exe → PowerShell 解压覆盖 → 重启 → 自清理
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     final exePath = Platform.resolvedExecutable;
@@ -165,5 +141,42 @@ del /q "$zipPath"
 ''');
     await Process.start('cmd', ['/c', batPath]);
     onExit?.call();
+  }
+
+  /// 下载发布包到本地文件，期间通过 [_progress] 上报进度
+  Future<void> _downloadToFile(String url, String destPath) async {
+    _downloading = true;
+    _progress = 0;
+    notifyListeners();
+    try {
+      final client = http.Client();
+      final res = await client
+          .send(http.Request('GET', Uri.parse(url)))
+          .timeout(const Duration(seconds: 30));
+      if (res.statusCode != 200) {
+        client.close();
+        throw HttpException('下载失败 HTTP ${res.statusCode}');
+      }
+      final total = res.contentLength ?? 0;
+      final sink = File(destPath).openWrite();
+      var received = 0;
+      await for (final chunk in res.stream) {
+        received += chunk.length;
+        sink.add(chunk);
+        if (total > 0) {
+          _progress = received / total;
+          notifyListeners();
+        }
+      }
+      await sink.flush();
+      await sink.close();
+      client.close();
+      if (File(destPath).lengthSync() < 1024 * 1024) {
+        throw HttpException('下载文件异常，请重试');
+      }
+    } finally {
+      _downloading = false;
+      notifyListeners();
+    }
   }
 }
