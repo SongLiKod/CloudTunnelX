@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
@@ -13,16 +14,28 @@ class BinaryManager extends ChangeNotifier {
   static const _releaseUrl =
       'https://github.com/cloudflare/cloudflared/releases/latest/download';
 
+  /// Android 10+（W^X 策略）禁止执行应用可写目录中的文件，
+  /// 内核必须以 libcloudflared.so 内置在 jniLibs，从 nativeLibraryDir 执行
+  /// （详见 settings_page 的「如何获取 Android arm64 内核？」指引）。
+  static const _androidLib = 'libcloudflared.so';
+  static const _nativeChannel = MethodChannel('com.cloudtunnelx/native');
+
   String? _binaryPath;
   String? _version;
   bool _downloading = false;
   double _progress = 0;
+
+  // Android 诊断信息：内置内核目录及是否存在（供设置页展示失败原因）
+  String? _androidLibDir;
+  bool _androidKernelPresent = false;
 
   String? get binaryPath => _binaryPath;
   String? get version => _version;
   bool get downloading => _downloading;
   double get progress => _progress;
   bool get ready => _binaryPath != null;
+  String? get androidNativeLibDir => _androidLibDir;
+  bool get androidKernelPresent => _androidKernelPresent;
 
   /// 内核安装目录：`<AppSupport>/bin`（技术文档 4.3）
   Future<Directory> binDir() async {
@@ -42,8 +55,41 @@ class BinaryManager extends ChangeNotifier {
     return Directory('$home/.cloudflared');
   }
 
+  /// Android 无系统证书路径（/etc/ssl/certs 不存在），Go 程序 TLS 校验会报
+  /// "certificate signed by unknown authority"。从应用内置资源释放 Mozilla
+  /// CA 根证书包，启动内核时通过 SSL_CERT_FILE 环境变量注入。
+  Future<String> ensureCaBundle() async {
+    final support = await binDir();
+    final file = File(
+        '${support.parent.path}${Platform.pathSeparator}cacert.pem');
+    if (!file.existsSync()) {
+      final bytes = await rootBundle.load('assets/cacert.pem');
+      await file.writeAsBytes(bytes.buffer.asUint8List());
+    }
+    return file.path;
+  }
+
   Future<String?> resolveBinary() async {
     final exeName = Platform.isWindows ? 'cloudflared.exe' : 'cloudflared';
+
+    // 0) Android：内置内核（nativeLibraryDir，可执行且只读）
+    if (Platform.isAndroid) {
+      _androidLibDir = await _androidNativeLibDir();
+      final libDir = _androidLibDir;
+      if (libDir != null) {
+        final lib = '$libDir${Platform.pathSeparator}$_androidLib';
+        final f = File(lib);
+        _androidKernelPresent = f.existsSync() && f.lengthSync() > 1024;
+        if (_androidKernelPresent) {
+          _binaryPath = lib;
+          await detectVersion();
+          return lib;
+        }
+      }
+      _binaryPath = null;
+      notifyListeners();
+      return null;
+    }
 
     // 1) 软件根目录 /bin/（技术文档 4.3）与 AppSupport/bin
     final candidates = <String>[];
@@ -85,6 +131,16 @@ class BinaryManager extends ChangeNotifier {
     return null;
   }
 
+  /// Android：nativeLibraryDir（内置 so 的安装目录）；非 Android 或失败返回 null
+  Future<String?> _androidNativeLibDir() async {
+    try {
+      final v = await _nativeChannel.invokeMethod<String>('nativeLibraryDir');
+      return (v == null || v.isEmpty) ? null : v;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> detectVersion() async {
     if (_binaryPath == null) return;
     try {
@@ -103,7 +159,7 @@ class BinaryManager extends ChangeNotifier {
   Future<String> installLatest() async {
     if (Platform.isAndroid) {
       throw UnsupportedError(
-          'Android 无官方预编译内核，请从发布页获取 arm64 内核后在设置中手动导入。');
+          'Android 内核随应用内置（libcloudflared.so），无需下载；如需更换内核请重新构建安装。');
     }
     final asset = Platform.isWindows ? _winAsset : _linuxAsset;
     final dir = await binDir();
@@ -155,10 +211,15 @@ class BinaryManager extends ChangeNotifier {
     }
   }
 
-  /// Android：从用户选择的文件导入 arm64 内核（技术文档 5.1）
+  /// 非 Android 平台从用户选择的文件导入内核（Android 10+ 禁止执行可写目录文件，故不支持）
   Future<String> importBinary(String sourcePath) async {
-    if (!Platform.isAndroid && !Platform.isLinux) {
-      throw UnsupportedError('当前平台无需手动导入内核');
+    if (Platform.isAndroid) {
+      throw UnsupportedError(
+          'Android 10+ 禁止执行应用可写目录中的文件，内核需以 libcloudflared.so 内置到 APK，'
+          '请将内核文件替换到 android/app/src/main/jniLibs/arm64-v8a/ 后重新构建安装。');
+    }
+    if (Platform.isWindows) {
+      throw UnsupportedError('Windows 无需手动导入内核，请使用「一键下载 / 更新内核」。');
     }
     final dir = await binDir();
     final target = '${dir.path}${Platform.pathSeparator}cloudflared';

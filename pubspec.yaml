@@ -74,6 +74,9 @@ flutter:
 
   assets:
     - assets/icon.ico
+    # Mozilla CA 根证书包：Android 无系统证书路径，启动内置内核前
+    # 释放并通过 SSL_CERT_FILE 注入（否则 trycloudflare.com TLS 握手失败）
+    - assets/cacert.pem
   #   - family: Trajan Pro
   #     fonts:
   #       - asset: fonts/TrajanPro.ttf
