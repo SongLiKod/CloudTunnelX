@@ -196,6 +196,40 @@ class CloudflareService extends ChangeNotifier {
     if (!_ok(res)) throw ApiException(_message(res));
   }
 
+  /// 创建「远程管理」模式的命名隧道并返回其运行 Token（无需 cert.pem / cert 登录）。
+  /// 所需权限：Account › Cloudflare Tunnel › Edit（另需 Zone › DNS › Edit 做 DNS 路由）。
+  /// 返回的 Token 与 `cloudflared tunnel run --token` 要求格式一致（base64 的 {a,t,s} JSON）。
+  Future<String> createTunnelToken(String name) async {
+    if (!configured) throw StateError('未配置 Cloudflare API Token');
+    if (_accountId == null) {
+      // 尚未拉取过 Zone，先取一次以获得账户 ID
+      await listZones();
+    }
+    if (_accountId == null) throw ApiException('无法获取 Cloudflare 账户 ID');
+    final res = await http.post(
+      Uri.parse('$_base/accounts/$_accountId/cfd_tunnel'),
+      headers: _headers,
+      body: jsonEncode({'name': name, 'config_src': 'cloudflare'}),
+    ).timeout(const Duration(seconds: 20));
+    if (!_ok(res)) throw ApiException(_message(res));
+    final result = (jsonDecode(res.body)['result'] as Map?) ?? const {};
+    // 远程管理模式：接口通常直接返回运行 Token
+    final token = result['token'] as String?;
+    if (token != null && token.isNotEmpty) return token;
+    // 兜底：从 credentials_file 拼装 {a,t,s} 格式的 Token
+    final cred = result['credentials_file'] as Map?;
+    if (cred != null) {
+      final tag = cred['AccountTag'] as String?;
+      final tid = cred['TunnelID'] as String?;
+      final sec = cred['TunnelSecret'] as String?;
+      if (tag != null && tid != null && sec != null) {
+        return base64Encode(
+            utf8.encode(jsonEncode({'a': tag, 't': tid, 's': sec})));
+      }
+    }
+    throw ApiException('接口未返回 Token，请到 Cloudflare 控制台（Zero Trust → Networks → Tunnels）创建后手动粘贴');
+  }
+
   bool _ok(http.Response res) {
     if (res.statusCode >= 200 && res.statusCode < 300) {
       try {

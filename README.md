@@ -47,10 +47,14 @@ flutter build apk --release
 - Windows：凭证存放在 `C:\Users\<用户名>\.cloudflared\cert.pem`
 - Android：凭证存放在应用私有数据目录（`Android/data/com.cloudtunnelx/files/.cloudflared/`，应用自动创建，已注入可写 HOME 环境变量）
 
-如果手机自动授权仍然失败（如网络限制），可二选一：
+如果手机自动授权仍然失败（如网络限制），推荐改用 **Token 远程模式**（固定隧道创建时选择「Token 管理」），它**无需 cert.pem、无需登录授权**，两种获取方式：
 
-1. **改用 Token 远程模式**（推荐）：创建固定隧道时选择 **Token 远程模式**，只需粘贴 `cloudflared tunnel token` 生成的 Token，**无需 cert.pem、无需登录授权**
-2. **手动导入证书**：在电脑上完成登录生成 `cert.pem`（`cloudflared tunnel login` 或 Windows 版 App 登录按钮），再将该文件推送到手机应用数据目录下的 `.cloudflared/cert.pem`（需 adb：`adb shell run-as com.cloudtunnelx ...`），回到 App 点「重新检测」
+1. **App 内一键生成**（推荐，免登录）：固定隧道创建弹窗选择「Token 管理」→ 点击 **「一键生成 Token（无需登录）」**，App 会用「域名管理」里已配置的 Cloudflare API Token 自动创建远程隧道并回填运行 Token
+   - 前提：该 API Token 需含 **「Account › Cloudflare Tunnel › Edit」** 权限（创建步骤见下），创建后直接「保存并启动」
+2. **控制台手动创建**：Cloudflare 控制台 → Zero Trust → Networks → Tunnels → Create a tunnel → 选「Cloudflare」保存 → 在隧道详情复制 Token → 粘贴到 App 的 Token 输入框
+
+> **App 内一键生成前提（给 API Token 加 Tunnel 权限）**
+> Cloudflare 控制台 → 右上角头像 → **My Profile → API Tokens → Create Token** → 用「Edit zone DNS」模板 → 在 **Account 权限**中增加 **Cloudflare Tunnel → Edit**（Zone 权限保留 DNS → Edit）→ 创建后到「域名管理」替换/添加该 Token。若未加 Tunnel 权限，生成时会提示权限不足。
 
 ## 内核管理（cloudflared）
 

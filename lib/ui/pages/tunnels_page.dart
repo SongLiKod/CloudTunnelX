@@ -282,6 +282,7 @@ class _TunnelEditDialogState extends State<TunnelEditDialog> {
   };
   bool _skipDnsCheck = false;
   bool _creating = false;
+  bool _generating = false;
   String? _stepText;
   List<ValidationIssue> _issues = [];
 
@@ -361,6 +362,43 @@ class _TunnelEditDialogState extends State<TunnelEditDialog> {
                 fontSize: 16, fontWeight: FontWeight.w600)),
       ),
     );
+  }
+
+  /// 一键生成 Token：用「域名管理」已配置的 Cloudflare API Token 创建
+  /// 远程管理隧道并取回运行 Token，实现免 cert.pem / cert 登录。
+  /// 需要该 API Token 含「Account › Cloudflare Tunnel › Edit」权限。
+  Future<void> _generateToken() async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() {
+      _generating = true;
+      _issues = [];
+    });
+    try {
+      final app = context.read<AppController>();
+      if (!app.cf.configured) {
+        setState(() => _issues = const [
+          ValidationIssue('未配置 Cloudflare API Token：请先在「设置 → Cloudflare API Token」配置（需含 Account › Cloudflare Tunnel › Edit 权限）')
+        ]);
+        return;
+      }
+      var name = _nameCtrl.text.trim();
+      if (name.isEmpty) {
+        name = 'cloudtunnelx-${DateTime.now().millisecondsSinceEpoch}';
+      }
+      // 隧道名仅允许字母 / 数字 / _ / -，其余字符清洗为连字符
+      name = name.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '-');
+      final token = await app.cf.createTunnelToken(name);
+      _tokenCtrl.text = token;
+      messenger.showSnackBar(SnackBar(
+          content: Text('已生成 Token（隧道：$name，远程管理模式），可直接保存并启动隧道')));
+    } catch (e) {
+      setState(() => _issues = [
+        ValidationIssue(
+            '生成失败：$e\n提示：若报权限不足，请在 Cloudflare 控制台创建含「Account › Cloudflare Tunnel › Edit」权限的 API Token，再到「域名管理」配置。')
+      ]);
+    } finally {
+      if (mounted) setState(() => _generating = false);
+    }
   }
 
   Future<void> _submit() async {
@@ -487,8 +525,31 @@ class _TunnelEditDialogState extends State<TunnelEditDialog> {
                 controller: _tokenCtrl,
                 maxLines: 2,
                 decoration: const InputDecoration(
-                    labelText: 'Cloudflare Tunnel Token（控制台创建后粘贴）',
+                    labelText: 'Cloudflare Tunnel Token（控制台创建后粘贴，或点击下方一键生成）',
                     prefixIcon: Icon(Icons.badge_outlined)),
+              ),
+              const SizedBox(height: 8),
+              Row(children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _generating ? null : _generateToken,
+                    icon: _generating
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child:
+                                CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.auto_fix_high_rounded, size: 17),
+                    label: const Text('一键生成 Token（无需登录）'),
+                  ),
+                ),
+              ]),
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: Text(
+                  '使用「域名管理」中的 Cloudflare API Token 自动创建隧道并生成运行 Token，免 cert.pem / cert 登录；要求该 API Token 含「Account › Cloudflare Tunnel › Edit」权限。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
               ),
             ] else ...[
               TextField(
