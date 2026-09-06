@@ -484,6 +484,46 @@ class AppController extends ChangeNotifier {
         final msg = e.toString().replaceFirst(RegExp(r'^\w+(State)?Error:\s*'), '');
         return (null, ValidationResult([ValidationIssue('Cloudflare 命令执行失败：$msg')]));
       }
+    } else {
+      // Token 远程管理模式：ingress 规则由 Cloudflare 云端管理。
+      // 若填写了访问域名，则用 Cloudflare API 自动绑定 DNS 路由（Public Hostname），
+      // 否则隧道只能建立连接但没有任何公网访问入口。
+      final sd = (subdomain ?? '').trim();
+      if (sd.isNotEmpty && (token ?? '').trim().isNotEmpty) {
+        try {
+          final svc = accountId == null ? cf : await serviceFor(accountId);
+          if (!svc.configured) {
+            return (null, ValidationResult([
+              ValidationIssue(
+                  '绑定访问域名需要 Cloudflare API Token（含 Account › Cloudflare Tunnel › Edit 与 Zone › DNS › Edit 权限），请先到「设置 → Cloudflare API Token」配置后再绑定。')
+            ]));
+          }
+          final zones = await svc.listZones();
+          final zone = bestZoneFor(sd, zones);
+          if (zone == null) {
+            return (null, ValidationResult([
+              ValidationIssue(
+                  '访问域名 $sd 未托管在当前账号的 Cloudflare 中，无法自动绑定 DNS 路由。请确认域名已在 Cloudflare 托管，或先清空访问域名。')
+            ]));
+          }
+          final service = '${c.protocol.scheme}://${c.localHost}:${c.localPort}';
+          await svc.bindTunnelHostname(
+            token: c.tunnelToken!,
+            hostname: sd,
+            service: service,
+            zoneId: zone.id,
+          );
+          logs.log(
+              tunnelId: c.id,
+              tunnelName: c.name,
+              protocol: c.protocol,
+              level: LogLevel.success,
+              message: '已绑定访问域名：$sd → $service');
+        } catch (e) {
+          final msg = e.toString().replaceFirst(RegExp(r'^\w+(State)?Error:\s*'), '');
+          return (null, ValidationResult([ValidationIssue('访问域名绑定失败：$msg')]));
+        }
+      }
     }
 
     await repo.saveTunnel(c);

@@ -56,6 +56,16 @@ flutter build apk --release
 > **App 内一键生成前提（给 API Token 加 Tunnel 权限）**
 > Cloudflare 控制台 → 右上角头像 → **My Profile → API Tokens → Create Token** → 用「Edit zone DNS」模板 → 在 **Account 权限**中增加 **Cloudflare Tunnel → Edit**（Zone 权限保留 DNS → Edit）→ 创建后到「域名管理」替换/添加该 Token。若未加 Tunnel 权限，生成时会提示权限不足。
 
+### Token 隧道的访问地址（Public Hostname）
+
+**Token 远程管理隧道本身不会自动生成访问 URL**——路由（Public Hostname）由 Cloudflare 云端管理，必须绑定到一个托管在 Cloudflare 的域名后才能通过浏览器访问。有两种绑定方式：
+
+1. **App 内一键绑定**（推荐）：Token 模式弹窗下方填写 **访问域名**（如 `app.example.com`，必须是已在 Cloudflare 托管的域名）→ 点击 **「绑定 DNS 路由」**（或直接保存，保存时会自动绑定）→ App 会自动创建 CNAME 并写入云端 ingress（`访问域名 → http://本地IP:端口`），保存并启动隧道后，列表即显示 `https://app.example.com` 访问 URL
+   - 前提：API Token 需含 **「Account › Cloudflare Tunnel › Edit」** 与 **「Zone › DNS › Edit」** 权限
+2. **控制台手动绑定**：Cloudflare 控制台 → Zero Trust → Networks → Tunnels → 选择该隧道 → Public Hostname → Add a public hostname → 填子域 + service（如 `http://localhost:8080`）→ Save
+
+> 若隧道启动成功但列表/状态页显示"暂无"地址，通常是尚未绑定 Public Hostname——回到 Token 模式弹窗绑定访问域名即可。
+
 ## 内核管理（cloudflared）
 
 cloudflared 官方下载地址：<https://github.com/cloudflare/cloudflared/releases>

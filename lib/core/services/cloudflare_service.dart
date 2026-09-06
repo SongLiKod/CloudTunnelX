@@ -230,6 +230,77 @@ class CloudflareService extends ChangeNotifier {
     throw ApiException('接口未返回 Token，请到 Cloudflare 控制台（Zero Trust → Networks → Tunnels）创建后手动粘贴');
   }
 
+  /// 从运行 Token 解析隧道 ID（base64 编码的 {"a":账号Tag,"t":隧道ID,"s":密钥} JSON）
+  static String? tunnelIdOf(String token) {
+    try {
+      final map = jsonDecode(utf8.decode(base64Decode(token.trim())));
+      final id = (map as Map?)?['t'] as String?;
+      return (id == null || id.trim().isEmpty) ? null : id.trim();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 为 Token 远程管理隧道绑定公网访问域名（Public Hostname）：
+  /// 1) 在 zoneId 中创建/更新 CNAME：hostname → {tunnelId}.cfargotunnel.com
+  /// 2) 更新隧道 ingress 配置：hostname → service（由 Cloudflare 云端管理）
+  /// 所需权限：Account › Cloudflare Tunnel › Edit + Zone › DNS › Edit
+  Future<void> bindTunnelHostname({
+    required String token,
+    required String hostname,
+    required String service,
+    required String zoneId,
+  }) async {
+    if (!configured) throw StateError('未配置 Cloudflare API Token');
+    final tunnelId = tunnelIdOf(token);
+    if (tunnelId == null) {
+      throw ApiException('无法从 Token 解析隧道 ID，请确认为有效的运行 Token');
+    }
+    if (_accountId == null) {
+      // 尚未拉取过 Zone，先取一次以获得账户 ID
+      await listZones();
+    }
+    if (_accountId == null) throw ApiException('无法获取 Cloudflare 账户 ID');
+
+    // 1) CNAME 记录：hostname → {tunnelId}.cfargotunnel.com
+    final target = '$tunnelId.cfargotunnel.com';
+    final existing = await listDnsRecords(zoneId, type: 'CNAME');
+    CfDnsRecord? hit;
+    for (final r in existing) {
+      if (r.name.toLowerCase() == hostname.toLowerCase()) {
+        hit = r;
+        break;
+      }
+    }
+    if (hit != null) {
+      await updateDnsRecord(
+          zoneId: zoneId, recordId: hit.id, content: target, proxied: true);
+    } else {
+      await createDnsRecord(
+          zoneId: zoneId,
+          type: 'CNAME',
+          name: hostname,
+          content: target,
+          proxied: true,
+          comment: 'CloudTunnelX 自动创建');
+    }
+
+    // 2) 云端 ingress 配置：hostname → 本地服务
+    final res = await http.put(
+      Uri.parse('$_base/accounts/$_accountId/cfd_tunnel/$tunnelId/configurations'),
+      headers: _headers,
+      body: jsonEncode({
+        'config': {
+          'ingress': [
+            {'hostname': hostname, 'service': service},
+            {'service': 'http_status:404'},
+          ],
+        },
+      }),
+    ).timeout(const Duration(seconds: 20));
+    if (!_ok(res)) throw ApiException(_message(res));
+  }
+
   bool _ok(http.Response res) {
     if (res.statusCode >= 200 && res.statusCode < 300) {
       try {

@@ -283,6 +283,8 @@ class _TunnelEditDialogState extends State<TunnelEditDialog> {
   bool _skipDnsCheck = false;
   bool _creating = false;
   bool _generating = false;
+  bool _binding = false;
+  String? _boundDomain;
   String? _stepText;
   List<ValidationIssue> _issues = [];
 
@@ -398,6 +400,63 @@ class _TunnelEditDialogState extends State<TunnelEditDialog> {
       ]);
     } finally {
       if (mounted) setState(() => _generating = false);
+    }
+  }
+
+  Future<void> _bindDomain() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final token = _tokenCtrl.text.trim();
+    final host = _subCtrl.text.trim();
+    if (token.isEmpty) {
+      setState(() => _issues = const [
+        ValidationIssue('请先粘贴或一键生成 Cloudflare Tunnel Token，再绑定访问域名。')
+      ]);
+      return;
+    }
+    if (host.isEmpty) {
+      setState(() => _issues = const [
+        ValidationIssue('请先填写访问域名（如 app.example.com）。')
+      ]);
+      return;
+    }
+    setState(() {
+      _binding = true;
+      _issues = [];
+    });
+    try {
+      final app = context.read<AppController>();
+      if (!app.cf.configured) {
+        setState(() => _issues = const [
+          ValidationIssue('未配置 Cloudflare API Token：请先在「设置 → Cloudflare API Token」配置（需含 Account › Cloudflare Tunnel › Edit 与 Zone › DNS › Edit 权限）')
+        ]);
+        return;
+      }
+      final zones = await app.cf.listZones();
+      final zone = AppController.bestZoneFor(host, zones);
+      if (zone == null) {
+        setState(() => _issues = [
+          ValidationIssue('访问域名 $host 未托管在当前账号的 Cloudflare 中（未找到匹配 Zone）。请确认域名已在 Cloudflare 托管。')
+        ]);
+        return;
+      }
+      final service =
+          '${_protocol.scheme}://${_hostCtrl.text.trim()}:${_portCtrl.text.trim()}';
+      await app.cf.bindTunnelHostname(
+        token: token,
+        hostname: host,
+        service: service,
+        zoneId: zone.id,
+      );
+      setState(() => _boundDomain = host);
+      messenger.showSnackBar(SnackBar(
+          content: Text('已绑定 DNS 路由：$host → $service，保存并启动隧道后即可访问 https://$host')));
+    } catch (e) {
+      setState(() => _issues = [
+        ValidationIssue(
+            '绑定失败：$e\n提示：若报权限不足，请在 Cloudflare 控制台创建含「Account › Cloudflare Tunnel › Edit」和「Zone › DNS › Edit」权限的 API Token。')
+      ]);
+    } finally {
+      if (mounted) setState(() => _binding = false);
     }
   }
 
@@ -548,6 +607,45 @@ class _TunnelEditDialogState extends State<TunnelEditDialog> {
                 padding: EdgeInsets.only(top: 6),
                 child: Text(
                   '使用「域名管理」中的 Cloudflare API Token 自动创建隧道并生成运行 Token，免 cert.pem / cert 登录；要求该 API Token 含「Account › Cloudflare Tunnel › Edit」权限。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _subCtrl,
+                decoration: InputDecoration(
+                    labelText: _protocol.isWeb
+                        ? '访问域名（如 app.example.com）'
+                        : '入口子域名（客户端经 Access 接入）',
+                    prefixIcon: const Icon(Icons.link_rounded),
+                    helperText: _boundDomain == null
+                        ? '填写后保存时将自动在 Cloudflare 绑定 DNS 路由，列表即可显示访问 URL'
+                        : '已绑定 DNS 路由，可在浏览器访问',
+                    suffixIcon: _boundDomain != null
+                        ? const Icon(Icons.check_circle_rounded,
+                            color: Colors.green)
+                        : null),
+              ),
+              const SizedBox(height: 8),
+              Row(children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _binding ? null : _bindDomain,
+                    icon: _binding
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child:
+                                CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.route_rounded, size: 17),
+                    label: const Text('绑定 DNS 路由'),
+                  ),
+                ),
+              ]),
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: Text(
+                  '用「域名管理」API Token（需含 Zone › DNS › Edit 权限）把上方访问域名 CNAME 指向该隧道并写入云端 ingress，保存后自动生效；Token 隧道不绑域名则没有访问地址。',
                   style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
               ),
