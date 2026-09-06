@@ -102,12 +102,12 @@ jobs:
         shell: bash
         run: |
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/cloudtunnelx-keystore.jks
             cat > android/key.properties <<EOF
           storePassword=$ANDROID_KEYSTORE_PASSWORD
           keyPassword=$ANDROID_KEY_PASSWORD
           keyAlias=$ANDROID_KEY_ALIAS
-          storeFile=upload-keystore.jks
+          storeFile=cloudtunnelx-keystore.jks
           EOF
             echo "Release signing configured from secrets"
           else
