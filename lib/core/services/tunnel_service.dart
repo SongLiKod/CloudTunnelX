@@ -385,14 +385,22 @@ class TunnelService extends ChangeNotifier {
 
   /// 进行中的浏览器授权进程（从输出流解析授权 URL）
   Process? _loginProcess;
+  String? _loginUrl;
+
+  /// 最近一次登录授权链接（供页面兜底展示/复制）
+  String? get loginUrl => _loginUrl;
 
   /// `cloudflared tunnel login`（浏览器授权，等待 cert.pem 落盘）
   /// 不依赖内核自动打开浏览器：桌面端 detached 启动时经常无反应且输出被丢弃；
   /// 统一改为内嵌运行并从输出流解析授权 URL，再用系统浏览器打开（否则界面无任何反应）。
-  Future<void> startLogin() async {
+  /// 返回 (授权URL, 浏览器是否已打开)：两者皆可空，调用方据此兜底提示，避免静默失败。
+  Future<(String?, bool)> startLogin() async {
     final binary = binaries.binaryPath;
     if (binary == null) throw StateError('未找到 cloudflared 内核');
-    if (_loginProcess != null) return; // 已有登录流程进行中，避免重复进程
+    // 已有登录流程进行中：返回其 URL 与打开结果，避免重复启动进程
+    if (_loginProcess != null) {
+      return (_loginUrl, true);
+    }
     final process = await Process.start(
       binary,
       ['tunnel', 'login'],
@@ -404,15 +412,19 @@ class TunnelService extends ChangeNotifier {
     _loginProcess = process;
     // 累积输出再匹配：授权 URL 可能被拆到多个 chunk，逐块匹配会漏掉
     var buf = '';
+    final result = Completer<(String?, bool)>();
     void onData(String chunk) {
       buf += chunk;
       final m = RegExp(
               r'https://dash\.cloudflare\.com/argotunnel\?callback=[^\s]+')
           .firstMatch(buf);
-      if (m != null) {
+      if (m != null && !result.isCompleted) {
+        final url = m.group(0)!;
+        _loginUrl = url;
         // 打开授权页；用户完成授权后内核自动写 ~/.cloudflared/cert.pem 并退出
-        unawaited(launchUrl(Uri.parse(m.group(0)!),
-            mode: LaunchMode.externalApplication));
+        _openLoginUrl(url).then((ok) {
+          if (!result.isCompleted) result.complete((url, ok));
+        });
       }
     }
 
@@ -420,7 +432,27 @@ class TunnelService extends ChangeNotifier {
     process.stderr.transform(utf8.decoder).listen(onData);
     process.exitCode.then((_) {
       if (identical(_loginProcess, process)) _loginProcess = null;
+      // 进程在输出出完整 URL 前退出（如排队失败/网络异常）：
+      // 稍等流数据排空后提前收尾，避免页面干等 20 秒超时
+      Future.delayed(const Duration(milliseconds: 800), () {
+        if (!result.isCompleted) result.complete((_loginUrl, false));
+      });
     });
+    try {
+      return await result.future.timeout(const Duration(seconds: 20));
+    } on TimeoutException {
+      return (_loginUrl, false);
+    }
+  }
+
+  /// 用系统浏览器打开授权页；失败返回 false（由页面兜底展示链接）
+  Future<bool> _openLoginUrl(String url) async {
+    try {
+      await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// 终止进行中的浏览器授权进程（授权完成/取消后调用，释放后台进程）

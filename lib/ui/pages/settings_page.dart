@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -33,6 +34,41 @@ class _SettingsPageState extends State<SettingsPage> {
     _autostartOn = _autostart.supported ? await _autostart.isEnabled() : false;
     _certOk = await app.binaries.hasLoginCert();
     if (mounted) setState(() {});
+  }
+
+  /// 浏览器未能自动打开授权页时的兜底弹窗：展示链接并支持一键复制
+  Future<void> _showLoginUrlFallback(BuildContext context, String url) {
+    return showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('手动打开授权页'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('浏览器未能自动打开，请在浏览器中手动访问以下链接完成授权：'),
+            const SizedBox(height: 8),
+            SelectableText(url, style: const TextStyle(fontSize: 12)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: url));
+              if (ctx.mounted) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                    const SnackBar(content: Text('授权链接已复制')));
+              }
+            },
+            child: const Text('复制链接'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -272,19 +308,43 @@ class _SettingsPageState extends State<SettingsPage> {
             const SizedBox(height: 12),
             Wrap(spacing: 10, children: [
               FilledButton.icon(
-                onPressed: bm.ready
-                    ? () async {
-                        await app.tunnels.startLogin();
-                        // 等待用户浏览器完成授权后落盘
-                        for (var i = 0; i < 60; i++) {
-                          await Future.delayed(const Duration(seconds: 2));
-                          if (await app.binaries.hasLoginCert()) break;
-                        }
-                        // 释放内嵌授权进程，否则每次点击都会残留一个等待授权的后台进程
-                        await app.tunnels.stopLogin();
-                        _refresh();
-                      }
-                    : null,
+                onPressed: () async {
+                  final messenger = ScaffoldMessenger.of(context);
+                  if (!bm.ready) {
+                    messenger.showSnackBar(const SnackBar(
+                        content: Text(
+                            '未检测到 cloudflared 内核：请先在「内核管理」一键下载/更新内核，或检查「内核安装目录」路径后重试')));
+                    return;
+                  }
+                  try {
+                    final (url, opened) = await app.tunnels.startLogin();
+                    // 浏览器未自动打开：弹窗兜底展示链接，避免界面毫无反应
+                    if (url == null) {
+                      messenger.showSnackBar(const SnackBar(
+                          content: Text(
+                              '未能获取浏览器授权链接（登录进程已退出）。请确认网络可用后重试，或到 Cloudflare 官网手动授权')));
+                    } else if (!opened) {
+                      await _showLoginUrlFallback(context, url);
+                    }
+                    // 等待用户浏览器完成授权后落盘
+                    for (var i = 0; i < 60; i++) {
+                      await Future.delayed(const Duration(seconds: 2));
+                      if (await app.binaries.hasLoginCert()) break;
+                    }
+                    if (await app.binaries.hasLoginCert()) {
+                      messenger.showSnackBar(
+                          const SnackBar(
+                              content: Text('登录授权完成，cert.pem 已生成')));
+                    }
+                  } catch (e) {
+                    messenger
+                        .showSnackBar(SnackBar(content: Text('登录启动失败：$e')));
+                  } finally {
+                    // 释放内嵌授权进程，否则每次点击都会残留一个等待授权的后台进程
+                    await app.tunnels.stopLogin();
+                    _refresh();
+                  }
+                },
                 icon: const Icon(Icons.login_rounded, size: 18),
                 label: const Text('登录授权（浏览器）'),
               ),

@@ -138,6 +138,11 @@ class BinaryManager extends ChangeNotifier {
     }
     final support = await binDir();
     candidates.add('${support.path}$sep$exeName');
+    // 兼容历史安装：旧版本内核默认安装在 AppSupport/bin（现默认已迁移到软件目录/bin）
+    if (!Platform.isAndroid) {
+      final base = await getApplicationSupportDirectory();
+      candidates.add('${base.path}${sep}bin$sep$exeName');
+    }
 
     for (final c in candidates) {
       final f = File(c);
