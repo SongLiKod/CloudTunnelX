@@ -377,9 +377,12 @@ class _TunnelEditDialogState extends State<TunnelEditDialog> {
     });
     try {
       final app = context.read<AppController>();
-      if (!app.cf.configured) {
+      final accountId = _pickAccountId();
+      // 取所选账号的实例：默认账号时直接使用主 cf 实例，多账号时按账号 ID 取
+      final svc = accountId == null ? app.cf : await app.serviceFor(accountId);
+      if (!svc.configured) {
         setState(() => _issues = const [
-          ValidationIssue('未配置 Cloudflare API Token：请先在「设置 → Cloudflare API Token」配置（需含 Account › Cloudflare Tunnel › Edit 权限）')
+          ValidationIssue('未配置所选账号的 Cloudflare API Token：请先在「设置 → Cloudflare API Token」配置（需含 Account › Cloudflare Tunnel › Edit 权限）')
         ]);
         return;
       }
@@ -389,7 +392,7 @@ class _TunnelEditDialogState extends State<TunnelEditDialog> {
       }
       // 隧道名仅允许字母 / 数字 / _ / -，其余字符清洗为连字符
       name = name.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '-');
-      final token = await app.cf.createTunnelToken(name);
+      final token = await svc.createTunnelToken(name);
       _tokenCtrl.text = token;
       messenger.showSnackBar(SnackBar(
           content: Text('已生成 Token（隧道：$name，远程管理模式），可直接保存并启动隧道')));
@@ -425,23 +428,26 @@ class _TunnelEditDialogState extends State<TunnelEditDialog> {
     });
     try {
       final app = context.read<AppController>();
-      if (!app.cf.configured) {
+      final accountId = _pickAccountId();
+      // 取所选账号的实例：默认账号时直接使用主 cf 实例，多账号时按账号 ID 取
+      final svc = accountId == null ? app.cf : await app.serviceFor(accountId);
+      if (!svc.configured) {
         setState(() => _issues = const [
-          ValidationIssue('未配置 Cloudflare API Token：请先在「设置 → Cloudflare API Token」配置（需含 Account › Cloudflare Tunnel › Edit 与 Zone › DNS › Edit 权限）')
+          ValidationIssue('未配置所选账号的 Cloudflare API Token：请先在「设置 → Cloudflare API Token」配置（需含 Account › Cloudflare Tunnel › Edit 与 Zone › DNS › Edit 权限）')
         ]);
         return;
       }
-      final zones = await app.cf.listZones();
+      final zones = await svc.listZones();
       final zone = AppController.bestZoneFor(host, zones);
       if (zone == null) {
         setState(() => _issues = [
-          ValidationIssue('访问域名 $host 未托管在当前账号的 Cloudflare 中（未找到匹配 Zone）。请确认域名已在 Cloudflare 托管。')
+          ValidationIssue('访问域名 $host 未托管在所选账号的 Cloudflare 中（未找到匹配 Zone）。请确认域名已在 Cloudflare 托管，或切换下方所属账号。')
         ]);
         return;
       }
       final service =
           '${_protocol.scheme}://${_hostCtrl.text.trim()}:${_portCtrl.text.trim()}';
-      await app.cf.bindTunnelHostname(
+      await svc.bindTunnelHostname(
         token: token,
         hostname: host,
         service: service,
@@ -556,8 +562,8 @@ class _TunnelEditDialogState extends State<TunnelEditDialog> {
               onChanged: isNew ? (v) => setState(() => _protocol = v!) : null,
             ),
             const SizedBox(height: 10),
-            if (!_tokenMode) _accountPicker(app),
-            if (!_tokenMode) const SizedBox(height: 10),
+            _accountPicker(app),
+            const SizedBox(height: 10),
             Row(children: [
               Expanded(
                 flex: 3,
