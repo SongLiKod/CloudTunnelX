@@ -102,8 +102,20 @@ class AppUpdater extends ChangeNotifier {
         'cloudtunnelx-android-v$latest.apk',
         apkPath,
       );
-      // 调起系统安装器，应用内直接安装
+      // 调起系统安装器前先做签名预检：CI 未配置稳定签名密钥时，各次构建签名不同，
+      // 覆盖安装必失败，系统提示晦涩且无法安装。不一致时在此直接给出明确指引。
       const channel = MethodChannel('com.cloudtunnelx/native');
+      final matches = await channel.invokeMethod<bool>(
+              'signatureMatches', {'apkPath': apkPath}) ??
+          false;
+      if (!matches) {
+        throw StateError(
+            '升级包与当前已安装应用签名不一致，无法覆盖安装。\n'
+            '为支持应用内升级，请在仓库 Secrets 中配置 ANDROID_KEYSTORE_BASE64 / '
+            'ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_PASSWORD / ANDROID_KEY_ALIAS '
+            '（固定签名密钥），并确保当前安装版本也由同一密钥签名。\n'
+            '如需立即升级：请先卸载旧版再从 Release 安装（卸载会清除本地隧道配置数据）。');
+      }
       await channel.invokeMethod('installApk', {'filePath': apkPath});
       return;
     }
@@ -123,7 +135,8 @@ class AppUpdater extends ChangeNotifier {
     );
 
     // 生成升级脚本并交由独立 cmd 执行，随后退出当前进程：
-    //    等待主进程退出解锁 exe → PowerShell 解压覆盖 → 重启 → 自清理
+    //    等待主进程退出解锁 exe → PowerShell 解压覆盖 → 重启
+    // 解压失败时同样重启现有版本，避免升级失败后应用凭空消失。zip 保留供排查。
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     final exePath = Platform.resolvedExecutable;
     final batPath = '$exeDir${Platform.pathSeparator}updater.bat';
@@ -131,13 +144,11 @@ class AppUpdater extends ChangeNotifier {
 @echo off
 rem CloudTunnelX 自动升级脚本
 timeout /t 3 /nobreak >nul
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '$zipPath' -DestinationPath '$exeDir' -Force"
-if errorlevel 1 goto :failed
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Expand-Archive -LiteralPath '$zipPath' -DestinationPath '$exeDir' -Force; exit 0 } catch { exit 1 }"
+if errorlevel 1 goto :relaunch
 del /q "$zipPath"
+:relaunch
 start "" "$exePath"
-goto :eof
-:failed
-del /q "$zipPath"
 ''');
     await Process.start('cmd', ['/c', batPath]);
     onExit?.call();

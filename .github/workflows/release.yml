@@ -95,6 +95,30 @@ jobs:
       - name: flutter pub get
         run: flutter pub get
 
+      # 应用内升级要求各版本签名一致：
+      # 从 Secrets 解码稳定 keystore 生成签名配置；未配置时回退 debug 签名
+      # （但 CI 每次运行密钥都不同，跨版本应用内升级会报"签名不一致"，最好配置）。
+      - name: Configure release signing
+        shell: bash
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+            cat > android/key.properties <<EOF
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyPassword=$ANDROID_KEY_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          storeFile=upload-keystore.jks
+          EOF
+            echo "Release signing configured from secrets"
+          else
+            echo "WARNING: ANDROID_KEYSTORE_BASE64 not set; release will use per-run debug key (in-app upgrade will fail with signature mismatch)"
+          fi
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+
       - name: Build Android release APK
         run: flutter build apk --release --no-pub
 

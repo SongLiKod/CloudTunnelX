@@ -26,6 +26,8 @@ class MainActivity : FlutterActivity() {
                         result.success(applicationContext.applicationInfo.nativeLibraryDir)
                     "installApk" -> installApk(call.argument<String>("filePath"), result)
                     "launcherBadge" -> setLauncherBadge(call.argument<Int>("count") ?: 0, result)
+                    "signatureMatches" ->
+                        signatureMatches(call.argument<String>("apkPath"), result)
                     else -> result.notImplemented()
                 }
             }
@@ -78,6 +80,31 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val BADGE_CHANNEL_ID = "cloudtunnelx_badge"
         private const val BADGE_NOTIFICATION_ID = 0xBAD6
+    }
+
+    /** 应用内更新前置校验：比对下载的 APK 与已安装应用的签名是否一致。
+     *  签名不一致时（如 CI 未配置稳定签名密钥）直接给出明确提示，
+     *  而不是让用户在系统安装器里看到晦涩的"与已安装应用签名不同"。 */
+    @Suppress("DEPRECATION")
+    private fun signatureMatches(apkPath: String?, result: MethodChannel.Result) {
+        if (apkPath == null) {
+            result.success(false)
+            return
+        }
+        try {
+            val pm = packageManager
+            val installed = pm.getPackageInfo(packageName, PackageManager.GET_SIGNATURES)
+            val archive = pm.getPackageArchiveInfo(apkPath, PackageManager.GET_SIGNATURES)
+            if (archive == null) {
+                result.error("APK_INVALID", "升级包不是有效的 APK 文件", null)
+                return
+            }
+            val installedSig = installed.signatures?.firstOrNull()?.toCharsString()
+            val apkSig = archive.signatures?.firstOrNull()?.toCharsString()
+            result.success(installedSig != null && installedSig == apkSig)
+        } catch (e: Exception) {
+            result.error("CHECK_FAILED", e.message, e.stackTraceToString())
+        }
     }
 
     /** 应用内更新：调起系统安装器安装更新 APK（先经 FileProvider 共享给安装器） */
