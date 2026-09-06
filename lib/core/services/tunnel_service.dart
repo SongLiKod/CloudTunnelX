@@ -177,14 +177,8 @@ class TunnelService extends ChangeNotifier {
     _metricPorts[c.id] = metricsPort;
 
     try {
-      final env = Map<String, String>.from(Platform.environment)
-        ..['NO_COLOR'] = '1';
-      if (Platform.isAndroid) {
-        // Android 没有系统证书路径，注入内置 Mozilla CA 证书包，
-        // 否则内核连 trycloudflare.com / Cloudflare API 时 TLS 报
-        // "certificate signed by unknown authority"
-        env['SSL_CERT_FILE'] = await binaries.ensureCaBundle();
-      }
+      // Android 需注入可写 HOME 与内置 CA 证书包（见 BinaryManager.kernelEnv）
+      final env = await binaries.kernelEnv();
       final p = await Process.start(
         binary,
         buildRunArgs(c, metricsPort),
@@ -387,8 +381,21 @@ class TunnelService extends ChangeNotifier {
   Process? _loginProcess;
   String? _loginUrl;
 
+  /// 最近一次登录失败时内核输出的诊断信息（URL 未解析到时展示真实原因）
+  String? _loginError;
+
   /// 最近一次登录授权链接（供页面兜底展示/复制）
   String? get loginUrl => _loginUrl;
+
+  /// 最近一次登录失败时内核输出的诊断信息
+  String? get loginError => _loginError;
+
+  /// 取进程输出尾部（限长）用于登录失败诊断
+  String? _tailOf(String raw) {
+    var s = raw.trim();
+    if (s.isEmpty) return null;
+    return s.length > 600 ? '…${s.substring(s.length - 600)}' : s;
+  }
 
   /// `cloudflared tunnel login`（浏览器授权，等待 cert.pem 落盘）
   /// 不依赖内核自动打开浏览器：桌面端 detached 启动时经常无反应且输出被丢弃；
@@ -401,13 +408,14 @@ class TunnelService extends ChangeNotifier {
     if (_loginProcess != null) {
       return (_loginUrl, true);
     }
+    _loginError = null;
+    _loginUrl = null;
     final process = await Process.start(
       binary,
       ['tunnel', 'login'],
-      // Android 无系统证书路径：注入内置 Mozilla CA，否则登录后获取凭证报证书错误
-      environment: Platform.isAndroid
-          ? {...Platform.environment, 'SSL_CERT_FILE': await binaries.ensureCaBundle()}
-          : null,
+      // Android 注入可写 HOME（默认是 /，创建 ~/.cloudflared 会权限失败）
+      // 及内置 Mozilla CA 证书包，否则登录流程直接退出或报证书错误
+      environment: await binaries.kernelEnv(),
     );
     _loginProcess = process;
     // 累积输出再匹配：授权 URL 可能被拆到多个 chunk，逐块匹配会漏掉
@@ -435,12 +443,16 @@ class TunnelService extends ChangeNotifier {
       // 进程在输出出完整 URL 前退出（如排队失败/网络异常）：
       // 稍等流数据排空后提前收尾，避免页面干等 20 秒超时
       Future.delayed(const Duration(milliseconds: 800), () {
-        if (!result.isCompleted) result.complete((_loginUrl, false));
+        if (!result.isCompleted) {
+          _loginError = _tailOf(buf);
+          result.complete((_loginUrl, false));
+        }
       });
     });
     try {
       return await result.future.timeout(const Duration(seconds: 20));
     } on TimeoutException {
+      _loginError = _tailOf(buf);
       return (_loginUrl, false);
     }
   }

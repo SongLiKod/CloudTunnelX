@@ -40,6 +40,18 @@ flutter build apk --release
 
 首次使用流程：设置页下载/检测 cloudflared 内核 → （固定隧道）填写 Cloudflare API Token → 创建隧道并绑定子域名 → 启动。
 
+### 登录授权（cert.pem）
+
+固定隧道默认需要一次浏览器授权生成 `cert.pem`（设置页 → 登录授权（浏览器）），Windows 与 Android 均已支持一键完成：
+
+- Windows：凭证存放在 `C:\Users\<用户名>\.cloudflared\cert.pem`
+- Android：凭证存放在应用私有数据目录（`Android/data/com.cloudtunnelx/files/.cloudflared/`，应用自动创建，已注入可写 HOME 环境变量）
+
+如果手机自动授权仍然失败（如网络限制），可二选一：
+
+1. **改用 Token 远程模式**（推荐）：创建固定隧道时选择 **Token 远程模式**，只需粘贴 `cloudflared tunnel token` 生成的 Token，**无需 cert.pem、无需登录授权**
+2. **手动导入证书**：在电脑上完成登录生成 `cert.pem`（`cloudflared tunnel login` 或 Windows 版 App 登录按钮），再将该文件推送到手机应用数据目录下的 `.cloudflared/cert.pem`（需 adb：`adb shell run-as com.cloudtunnelx ...`），回到 App 点「重新检测」
+
 ## 内核管理（cloudflared）
 
 cloudflared 官方下载地址：<https://github.com/cloudflare/cloudflared/releases>

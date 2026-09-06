@@ -78,14 +78,36 @@ class BinaryManager extends ChangeNotifier {
     return dir;
   }
 
-  /// Cloudflare 凭证目录：~/.cloudflared
+  /// Cloudflare 凭证目录：桌面端为 ~/.cloudflared；
+  /// Android 应用进程的 HOME 是 /（不可写），必须改用应用私有数据目录，
+  /// 否则 cloudflared login/写证书会在 /.cloudflared 上直接权限失败。
   Future<Directory> cloudflaredHome() async {
     if (Platform.isWindows) {
       final userprofile = Platform.environment['USERPROFILE'] ?? '.';
       return Directory('$userprofile\\.cloudflared');
     }
+    if (Platform.isAndroid) {
+      final base = await getApplicationSupportDirectory();
+      return Directory('${base.path}${Platform.pathSeparator}.cloudflared');
+    }
     final home = Platform.environment['HOME'] ?? '/';
     return Directory('$home/.cloudflared');
+  }
+
+  /// cloudflared 进程统一环境变量：
+  /// - Android 默认 HOME=/（应用无权写入根目录），注入可写的应用私有目录，
+  ///   否则 login 创建 ~/.cloudflared、写 cert.pem 都会失败；
+  /// - Android 无系统证书路径（/etc/ssl/certs 不存在），Go 程序 TLS 校验会报
+  ///   "certificate signed by unknown authority"，注入内置 Mozilla CA 包。
+  Future<Map<String, String>> kernelEnv() async {
+    final env = Map<String, String>.from(Platform.environment)
+      ..['NO_COLOR'] = '1';
+    if (Platform.isAndroid) {
+      final base = await getApplicationSupportDirectory();
+      env['HOME'] = base.path;
+      env['SSL_CERT_FILE'] = await ensureCaBundle();
+    }
+    return env;
   }
 
   /// Android 无系统证书路径（/etc/ssl/certs 不存在），Go 程序 TLS 校验会报

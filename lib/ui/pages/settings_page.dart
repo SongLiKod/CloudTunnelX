@@ -320,9 +320,11 @@ class _SettingsPageState extends State<SettingsPage> {
                     final (url, opened) = await app.tunnels.startLogin();
                     // 浏览器未自动打开：弹窗兜底展示链接，避免界面毫无反应
                     if (url == null) {
-                      messenger.showSnackBar(const SnackBar(
-                          content: Text(
-                              '未能获取浏览器授权链接（登录进程已退出）。请确认网络可用后重试，或到 Cloudflare 官网手动授权')));
+                      final detail = app.tunnels.loginError;
+                      messenger.showSnackBar(SnackBar(
+                          content: Text(detail == null
+                              ? '未能获取浏览器授权链接（登录进程已退出）。请确认网络可用后重试，或到 Cloudflare 官网手动授权'
+                              : '未能获取浏览器授权链接（登录进程已退出）。内核输出：\n$detail')));
                     } else if (!opened) {
                       await _showLoginUrlFallback(context, url);
                     }
