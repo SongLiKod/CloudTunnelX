@@ -288,6 +288,8 @@ class TunnelService extends ChangeNotifier {
     _upsertRuntime(id, (rt) {
       rt.status = TunnelStatus.stopped;
       rt.startedAt = null;
+      // 停止后旧链接失效，清空避免页面继续展示（临时隧道尤其明显）
+      rt.publicUrl = null;
     });
   }
 
@@ -297,7 +299,10 @@ class TunnelService extends ChangeNotifier {
     _metricTimers[c.id] = null;
 
     if (_userStop[c.id] == true) {
-      _upsertRuntime(c.id, (rt) => rt.status = TunnelStatus.stopped);
+      _upsertRuntime(c.id, (rt) {
+        rt.status = TunnelStatus.stopped;
+        rt.publicUrl = null; // 用户主动停止后旧链接失效
+      });
       return;
     }
 
@@ -308,6 +313,7 @@ class TunnelService extends ChangeNotifier {
       _upsertRuntime(c.id, (rt) {
         rt.status = TunnelStatus.reconnecting;
         rt.lastError = '进程退出(code=$code)，${delay}ms 后自动重连';
+        rt.publicUrl = null; // 断开期间旧链接失效，重连成功后再填
       });
       logs.log(
           tunnelId: c.id,
@@ -329,6 +335,7 @@ class TunnelService extends ChangeNotifier {
       rt.status = TunnelStatus.error;
       rt.lastError ??= '进程异常退出(code=$code)';
       rt.startedAt = null;
+      rt.publicUrl = null; // 异常退出后旧链接失效
     });
   }
 
@@ -376,32 +383,32 @@ class TunnelService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 进行中的浏览器授权进程（Android：从输出流解析授权 URL）
+  /// 进行中的浏览器授权进程（从输出流解析授权 URL）
   Process? _loginProcess;
 
   /// `cloudflared tunnel login`（浏览器授权，等待 cert.pem 落盘）
-  /// 桌面端：内核自动打开系统浏览器；Android 无 xdg-open，改为内嵌运行并从
-  /// 输出流解析授权 URL，再用系统浏览器打开（否则界面无任何反应）。
+  /// 不依赖内核自动打开浏览器：桌面端 detached 启动时经常无反应且输出被丢弃；
+  /// 统一改为内嵌运行并从输出流解析授权 URL，再用系统浏览器打开（否则界面无任何反应）。
   Future<void> startLogin() async {
     final binary = binaries.binaryPath;
     if (binary == null) throw StateError('未找到 cloudflared 内核');
-    if (!Platform.isAndroid) {
-      await Process.start(binary, ['tunnel', 'login'],
-          mode: ProcessStartMode.detached);
-      return;
-    }
     if (_loginProcess != null) return; // 已有登录流程进行中，避免重复进程
     final process = await Process.start(
       binary,
       ['tunnel', 'login'],
       // Android 无系统证书路径：注入内置 Mozilla CA，否则登录后获取凭证报证书错误
-      environment: {...Platform.environment, 'SSL_CERT_FILE': await binaries.ensureCaBundle()},
+      environment: Platform.isAndroid
+          ? {...Platform.environment, 'SSL_CERT_FILE': await binaries.ensureCaBundle()}
+          : null,
     );
     _loginProcess = process;
+    // 累积输出再匹配：授权 URL 可能被拆到多个 chunk，逐块匹配会漏掉
+    var buf = '';
     void onData(String chunk) {
+      buf += chunk;
       final m = RegExp(
-              r'https://dash\.cloudflare\.com/argotunnel\?callback=\S+')
-          .firstMatch(chunk);
+              r'https://dash\.cloudflare\.com/argotunnel\?callback=[^\s]+')
+          .firstMatch(buf);
       if (m != null) {
         // 打开授权页；用户完成授权后内核自动写 ~/.cloudflared/cert.pem 并退出
         unawaited(launchUrl(Uri.parse(m.group(0)!),

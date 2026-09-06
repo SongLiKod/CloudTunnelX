@@ -218,8 +218,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           await Future.delayed(const Duration(seconds: 2));
                           if (await app.binaries.hasLoginCert()) break;
                         }
-                        // 桌面端 detached 无进程可清；Android 内嵌进程在此释放，
-                        // 否则每次点击都会残留一个等待授权的后台进程
+                        // 释放内嵌授权进程，否则每次点击都会残留一个等待授权的后台进程
                         await app.tunnels.stopLogin();
                         _refresh();
                       }
