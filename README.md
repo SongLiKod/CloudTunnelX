@@ -12,7 +12,8 @@
 - **智能校验**：URL/端口格式、端口占用、本地服务连通性、DNS 托管（DoH）全维度校验，附带修复建议
 - **日志与报错解析**：按隧道分类的实时日志，常见报错自动识别并给出修复方案
 - **系统集成**：Windows 开机自启 + 系统托盘；Android 前台服务保活，通知栏一键停止
-- **内核管理**：cloudflared 内核自动检测 / 一键下载，Android 支持手动导入
+- **内核管理**：cloudflared 内核自动检测 / 一键下载更新，Android 内核随 APK 内置
+- **应用自升级**：Windows 应用内下载 zip 覆盖升级并自动重启；Android 应用内下载 APK 直接调起系统安装器
 
 ## 运行环境
 
@@ -20,7 +21,7 @@
 | --- | --- |
 | Flutter | 3.44.2 stable（Dart ^3.12） |
 | Windows | Windows 10/11 x64 + Visual Studio 2022（C++ 桌面开发组件，仅构建需要） |
-| Android | Android 7.0+，需自行导入 arm64 版 cloudflared 内核 |
+| Android | Android 7.0+，内核已随 APK 内置（arm64） |
 
 **前置条件**：拥有自有域名，且域名 DNS 已托管至 Cloudflare（固定隧道必需）。
 
@@ -39,6 +40,44 @@ flutter build apk --release
 
 首次使用流程：设置页下载/检测 cloudflared 内核 → （固定隧道）填写 Cloudflare API Token → 创建隧道并绑定子域名 → 启动。
 
+## 内核管理（cloudflared）
+
+cloudflared 官方下载地址：<https://github.com/cloudflare/cloudflared/releases>
+
+### Windows
+
+- 首次使用：设置页「内核管理」点击 **一键下载 / 更新内核** 即可自动下载最新版 `cloudflared-windows-amd64.exe` 到软件目录 `bin/`，全程无命令行窗口
+- 更新内核：同样点击 **一键下载 / 更新内核**，自动以最新版覆盖旧内核，无需手动替换文件
+- 也支持「自定义内核目录」：手动放入 `cloudflared.exe` 后点「重新检测」即可识别
+
+### Android（更新内置内核）
+
+> Android 10+ 出于安全（W^X 策略）禁止执行应用可写目录中的文件，导入模式不可用。内核必须以 `libcloudflared.so` 内置在 APK 的 jniLibs 中，运行时从系统安装目录（nativeLibraryDir，只读可执行）启动。
+
+更新步骤：
+
+1. **下载内核**：打开 <https://github.com/cloudflare/cloudflared/releases>，在最新 Release 的 Assets 中下载 **`cloudflared-linux-arm64`**（无后缀的二进制文件）
+   - 也可以从 Termux 获取 Android 构建版（`pkg install cloudflared`），临时穿透更稳，可规避 `lookup … on [::1]:53` 类 DNS 报错
+2. **重命名**：将下载文件改名为 **`libcloudflared.so`**（注意扩展名，不是 `.exe`，也不要加其他后缀）
+3. **放入工程目录**：替换 `android/app/src/main/jniLibs/arm64-v8a/libcloudflared.so`
+4. **重新构建安装**：
+   - 开发调试：`flutter run`
+   - 发布测试：`flutter build apk --release` 后安装新 APK
+5. **验证**：安装后回到设置页「内核管理」点击 **重新检测**，应能识别出新版本号；若失败，请确认放入的是 arm64-v8a（aarch64）架构的文件
+
+应用内也会在「设置 → 内核管理」中提供上述指引与一键下载按钮。
+
+## 应用升级
+
+设置页「检查更新」会通过 GitHub Releases API 检测新版本，检测到后可一键升级：
+
+| 平台 | 升级方式 |
+| --- | --- |
+| Windows | 下载 zip → 自动解压覆盖 → 重启应用，无需手动替换 |
+| Android | 应用内下载 APK（含进度）→ 直接调起系统安装器 |
+
+> Android 应用内升级要求各版本签名一致：发布构建需在仓库 Secrets 配置 `ANDROID_KEYSTORE_BASE64` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_PASSWORD` / `ANDROID_KEY_ALIAS` 固定签名密钥，否则覆盖安装会提示"签名不一致"（需卸载旧版重新安装，会清除本地配置）。
+
 ## 项目结构
 
 ```
@@ -53,6 +92,7 @@ lib/
 │       ├── tunnel_service.dart     # 隧道进程调度、断线重连、流量统计
 │       ├── cloudflare_service.dart # Cloudflare API 封装（Zone/DNS 管理）
 │       ├── binary_manager.dart     # cloudflared 内核查找/下载/导入
+│       ├── app_updater.dart        # 应用自升级（版本检测/下载/安装）
 │       ├── validation_service.dart # 全维度参数校验
 │       ├── config_repository.dart  # hive_ce 持久化
 │       ├── log_service.dart        # 日志收集
@@ -68,7 +108,10 @@ lib/
 ## CI / CD
 
 - `.github/workflows/ci.yml`：push/PR 触发 — 静态分析 + 单元测试 → Windows 构建 → Android 构建（APK/AAB）
-- `.github/workflows/release.yml`：打 `v*` tag 触发 — 双端构建并打包发布到 GitHub Release（Windows zip 已内置 VC++ 运行时 DLL）
+- `.github/workflows/release.yml`：发布构建，两种触发方式：
+  - **推送 `v*` tag**（推荐）：`git tag v2.0.2 && git push origin v2.0.2` 自动构建并打包发布到 GitHub Release
+  - **手动触发**（Actions 页面 Run workflow）：填写发布标签（如 `v2.0.2`），自动创建同名 tag 并发布 Release，无需预先建 tag
+  - Windows zip 已内置 VC++ 运行时 DLL，可直接解压运行
 
 ## 文档
 
