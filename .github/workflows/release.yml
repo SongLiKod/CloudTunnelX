@@ -156,8 +156,12 @@ jobs:
           name: cloudtunnelx-android
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
+          # 手动触发时无既有 tag，显式传 tag_name 让 action 自动创建 tag + release
+          # （tag 默认指向仓库默认分支；指定 target_commitish 指向本次构建的提交）
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
           name: ${{ env.RELEASE_TAG }}
           draft: false
           prerelease: false
