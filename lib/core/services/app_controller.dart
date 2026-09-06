@@ -77,10 +77,12 @@ class AppController extends ChangeNotifier {
     binaries.addListener(notifyListeners);
     repo.addListener(notifyListeners);
     cf.addListener(notifyListeners);
-    // Android：隧道运行状态联动前台服务通知（技术文档 5.2.1）
-    if (!kIsWeb && Platform.isAndroid) {
+    // 隧道运行状态联动：Android 前台服务通知/桌面图标徽标、Windows 任务栏角标
+    if (!kIsWeb) {
       tunnels.addListener(_syncForegroundService);
-      FlutterForegroundTask.addTaskDataCallback(_onTaskData);
+      if (Platform.isAndroid) {
+        FlutterForegroundTask.addTaskDataCallback(_onTaskData);
+      }
     }
     // 恢复外观主题偏好（默认跟随系统）
     final savedTheme = repo.getSetting<String>('theme_mode');
