@@ -37,8 +37,41 @@ class BinaryManager extends ChangeNotifier {
   String? get androidNativeLibDir => _androidLibDir;
   bool get androidKernelPresent => _androidKernelPresent;
 
-  /// 内核安装目录：`<AppSupport>/bin`（技术文档 4.3）
+  String? _customBinDir;
+
+  /// 用户自定义内核目录（null 表示使用默认：软件目录下的 bin 插件目录）
+  String? get customBinDir => _customBinDir;
+
+  /// 设置自定义内核目录（null 恢复默认）。变更后请重新检测内核。
+  void setCustomBinDir(String? path) {
+    final v = (path == null || path.trim().isEmpty) ? null : path.trim();
+    if (_customBinDir == v) return;
+    _customBinDir = v;
+    notifyListeners();
+  }
+
+  /// 内核安装目录：自定义目录 > 软件目录下 bin（插件目录）> AppSupport/bin 兜底。
+  /// 桌面端默认放在本软件目录下的 bin（需求：插件目录应位于软件自身目录），
+  /// 若软件目录不可写（Program Files、受管控目录）则自动回退 AppSupport。
+  /// Android 无需下载内核，固定 AppSupport/bin（释放 cacert.pem 用）。
   Future<Directory> binDir() async {
+    final custom = _customBinDir;
+    if (custom != null && custom.isNotEmpty) {
+      final dir = Directory(custom);
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      return dir;
+    }
+    if (!Platform.isAndroid &&
+        Platform.resolvedExecutable.contains(Platform.pathSeparator)) {
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      final dir = Directory('$exeDir${Platform.pathSeparator}bin');
+      try {
+        if (!dir.existsSync()) dir.createSync(recursive: true);
+        return dir;
+      } catch (_) {
+        // 软件目录不可写时回退 AppSupport
+      }
+    }
     final base = await getApplicationSupportDirectory();
     final dir = Directory('${base.path}${Platform.pathSeparator}bin');
     if (!dir.existsSync()) dir.createSync(recursive: true);
@@ -91,15 +124,25 @@ class BinaryManager extends ChangeNotifier {
       return null;
     }
 
-    // 1) 软件根目录 /bin/（技术文档 4.3）与 AppSupport/bin
+    // 1) 自定义目录 → 软件根目录 /bin/（技术文档 4.3）与 AppSupport/bin
     final candidates = <String>[];
-    if (Platform.resolvedExecutable.contains(Platform.pathSeparator)) {
+    final sep = Platform.pathSeparator;
+    final custom = _customBinDir;
+    if (custom != null && custom.isNotEmpty) {
+      candidates.add('$custom$sep$exeName');
+    }
+    if (Platform.resolvedExecutable.contains(sep)) {
       final exeDir = File(Platform.resolvedExecutable).parent.path;
-      candidates.add('$exeDir${Platform.pathSeparator}bin$exeName');
-      candidates.add('$exeDir${Platform.pathSeparator}$exeName');
+      candidates.add('$exeDir${sep}bin$sep$exeName');
+      candidates.add('$exeDir$sep$exeName');
     }
     final support = await binDir();
-    candidates.add('${support.path}${Platform.pathSeparator}$exeName');
+    candidates.add('${support.path}$sep$exeName');
+    // 兼容历史安装：旧版本内核默认安装在 AppSupport/bin（现默认已迁移到软件目录/bin）
+    if (!Platform.isAndroid) {
+      final base = await getApplicationSupportDirectory();
+      candidates.add('${base.path}${sep}bin$sep$exeName');
+    }
 
     for (final c in candidates) {
       final f = File(c);
@@ -163,6 +206,22 @@ class BinaryManager extends ChangeNotifier {
     }
     final asset = Platform.isWindows ? _winAsset : _linuxAsset;
     final dir = await binDir();
+    // 提前校验目标目录可写：权限被拒时给出明确指引，而非下载完才报错
+    try {
+      final probe = File('${dir.path}${Platform.pathSeparator}.writable_probe');
+      await probe.writeAsString('');
+      await probe.delete();
+    } catch (e) {
+      final reason = e is FileSystemException && e.osError != null
+          ? e.osError!.message
+          : '$e';
+      throw FileSystemException(
+        '内核安装目录不可写：${dir.path}\n'
+        '原因：$reason\n'
+        '请在设置页选择你有权限的目录作为「自定义内核目录」。',
+        dir.path,
+      );
+    }
     final target =
         '${dir.path}${Platform.pathSeparator}${Platform.isWindows ? "cloudflared.exe" : "cloudflared"}';
 

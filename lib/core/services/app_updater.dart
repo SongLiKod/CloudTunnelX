@@ -2,17 +2,17 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import 'binary_manager.dart';
 
 /// 应用自身更新检查与升级：
 /// - 通过 GitHub Releases API 获取最新版本（tag 形如 v1.1.0）
 /// - Windows：下载 zip → 解压覆盖 → 自动重启（无需手动替换文件）
-/// - Android：跳转浏览器下载 APK 手动安装（平台限制无法静默安装）
+/// - Android：应用内下载 APK（含进度）→ 直接调起系统安装器，不跳转浏览器
 class AppUpdater extends ChangeNotifier {
   static const _repo = 'SongLiKod/CloudTunnelX';
   static const _apiLatest =
@@ -20,6 +20,7 @@ class AppUpdater extends ChangeNotifier {
 
   String? _currentVersion;
   String? _latestVersion;
+  String? _latestTag;
   String? _releaseNotes;
   String? _error;
   bool _checking = false;
@@ -70,9 +71,14 @@ class AppUpdater extends ChangeNotifier {
         throw HttpException('HTTP ${res.statusCode}');
       }
       final j = jsonDecode(res.body) as Map<String, dynamic>;
-      final tag = ((j['tag_name'] as String?) ?? '').replaceFirst(RegExp(r'^v'), '');
-      // 注意取 group(0) 完整匹配；带量词的重复捕获组只保留最后一段（如 ".0"）
-      final m = RegExp(r'\d{1,3}(?:\.\d{1,3}){1,2}').firstMatch(tag);
+      // 完整标签（如 v2.0.4-beta）须原样保留：发布资源名按 tag 命名，
+      // 若剥掉后缀拼 URL 会 404（比如请求 v2.0.4 实际资源是 v2.0.4-beta）。
+      final tag = ((j['tag_name'] as String?) ?? '').trim();
+      if (tag.isEmpty) throw const FormatException('无法解析发布标签');
+      _latestTag = tag;
+      // 比较/展示用纯数字版本号：注意取 group(0) 完整匹配；带量词的重复捕获组只保留最后一段（如 ".0"）
+      final m = RegExp(r'\d{1,3}(?:\.\d{1,3}){1,2}')
+          .firstMatch(tag.replaceFirst(RegExp(r'^v'), ''));
       if (m == null) throw const FormatException('无法解析发布版本号');
       _latestVersion = m.group(0);
       final body = ((j['body'] as String?) ?? '').trim();
@@ -85,19 +91,40 @@ class AppUpdater extends ChangeNotifier {
     }
   }
 
-  /// 执行升级。Windows 静默替换并重启；
-  /// Android 打开下载页（APK 需用户手动确认安装）。
-  /// Windows 完成前会调用 [onExit] 关闭当前应用进程。
+  /// 执行升级：
+  /// - Windows：下载 zip → 静默替换并重启（完成前调用 [onExit] 关闭当前进程）
+  /// - Android：应用内下载 APK → 调起系统安装器直接安装（首次需授权"安装未知应用"）
   Future<void> downloadAndInstall({VoidCallback? onExit}) async {
     final latest = _latestVersion;
     if (latest == null) throw StateError('暂无可用版本信息，请先检查更新');
+    // 下载拼接用完整 tag（含 v 前缀与 -beta 等后缀），与 GitHub 资源命名保持一致
+    final releaseTag = _latestTag ?? 'v$latest';
 
     if (Platform.isAndroid) {
-      await launchUrl(
-        Uri.parse('https://github.com/$_repo/releases/download/v$latest/'
-            'cloudtunnelx-android-v$latest.apk'),
-        mode: LaunchMode.externalApplication,
+      // 下载到应用缓存目录（原生端 FileProvider 映射该目录）
+      final cacheDir = await getTemporaryDirectory();
+      final apkPath =
+          '${cacheDir.path}${Platform.pathSeparator}cloudtunnelx-$releaseTag.apk';
+      await _downloadToFile(
+        'https://github.com/$_repo/releases/download/$releaseTag/'
+        'cloudtunnelx-android-$releaseTag.apk',
+        apkPath,
       );
+      // 调起系统安装器前先做签名预检：CI 未配置稳定签名密钥时，各次构建签名不同，
+      // 覆盖安装必失败，系统提示晦涩且无法安装。不一致时在此直接给出明确指引。
+      const channel = MethodChannel('com.cloudtunnelx/native');
+      final matches = await channel.invokeMethod<bool>(
+              'signatureMatches', {'apkPath': apkPath}) ??
+          false;
+      if (!matches) {
+        throw StateError(
+            '升级包与当前已安装应用签名不一致，无法覆盖安装。\n'
+            '为支持应用内升级，请在仓库 Secrets 中配置 ANDROID_KEYSTORE_BASE64 / '
+            'ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_PASSWORD / ANDROID_KEY_ALIAS '
+            '（固定签名密钥），并确保当前安装版本也由同一密钥签名。\n'
+            '如需立即升级：请先卸载旧版再从 Release 安装（卸载会清除本地隧道配置数据）。');
+      }
+      await channel.invokeMethod('installApk', {'filePath': apkPath});
       return;
     }
     if (!Platform.isWindows) {
@@ -108,24 +135,49 @@ class AppUpdater extends ChangeNotifier {
     final updDir = Directory('${base.path}${Platform.pathSeparator}updates');
     if (!updDir.existsSync()) updDir.createSync(recursive: true);
     final zipPath =
-        '${updDir.path}${Platform.pathSeparator}cloudtunnelx-windows-v$latest.zip';
+        '${updDir.path}${Platform.pathSeparator}cloudtunnelx-$releaseTag.zip';
+    await _downloadToFile(
+      'https://github.com/$_repo/releases/download/$releaseTag/'
+      'cloudtunnelx-windows-$releaseTag.zip',
+      zipPath,
+    );
 
-    // 1) 下载发布包（支持进度回调）
+    // 生成升级脚本并交由独立 cmd 执行，随后退出当前进程：
+    //    等待主进程退出解锁 exe → PowerShell 解压覆盖 → 重启
+    // 解压失败时同样重启现有版本，避免升级失败后应用凭空消失。zip 保留供排查。
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    final exePath = Platform.resolvedExecutable;
+    final batPath = '$exeDir${Platform.pathSeparator}updater.bat';
+    File(batPath).writeAsStringSync('''
+@echo off
+rem CloudTunnelX 自动升级脚本
+timeout /t 3 /nobreak >nul
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Expand-Archive -LiteralPath '$zipPath' -DestinationPath '$exeDir' -Force; exit 0 } catch { exit 1 }"
+if errorlevel 1 goto :relaunch
+del /q "$zipPath"
+:relaunch
+start "" "$exePath"
+''');
+    await Process.start('cmd', ['/c', batPath]);
+    onExit?.call();
+  }
+
+  /// 下载发布包到本地文件，期间通过 [_progress] 上报进度
+  Future<void> _downloadToFile(String url, String destPath) async {
     _downloading = true;
     _progress = 0;
     notifyListeners();
     try {
       final client = http.Client();
-      final res = await client.send(http.Request(
-          'GET',
-          Uri.parse('https://github.com/$_repo/releases/download/v$latest/'
-              'cloudtunnelx-windows-v$latest.zip')));
+      final res = await client
+          .send(http.Request('GET', Uri.parse(url)))
+          .timeout(const Duration(seconds: 30));
       if (res.statusCode != 200) {
         client.close();
         throw HttpException('下载失败 HTTP ${res.statusCode}');
       }
       final total = res.contentLength ?? 0;
-      final sink = File(zipPath).openWrite();
+      final sink = File(destPath).openWrite();
       var received = 0;
       await for (final chunk in res.stream) {
         received += chunk.length;
@@ -138,32 +190,12 @@ class AppUpdater extends ChangeNotifier {
       await sink.flush();
       await sink.close();
       client.close();
-      if (File(zipPath).lengthSync() < 1024 * 1024) {
+      if (File(destPath).lengthSync() < 1024 * 1024) {
         throw HttpException('下载文件异常，请重试');
       }
     } finally {
       _downloading = false;
       notifyListeners();
     }
-
-    // 2) 生成升级脚本并交由独立 cmd 执行，随后退出当前进程：
-    //    等待主进程退出解锁 exe → PowerShell 解压覆盖 → 重启 → 自清理
-    final exeDir = File(Platform.resolvedExecutable).parent.path;
-    final exePath = Platform.resolvedExecutable;
-    final batPath = '$exeDir${Platform.pathSeparator}updater.bat';
-    File(batPath).writeAsStringSync('''
-@echo off
-rem CloudTunnelX 自动升级脚本
-timeout /t 3 /nobreak >nul
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '$zipPath' -DestinationPath '$exeDir' -Force"
-if errorlevel 1 goto :failed
-del /q "$zipPath"
-start "" "$exePath"
-goto :eof
-:failed
-del /q "$zipPath"
-''');
-    await Process.start('cmd', ['/c', batPath]);
-    onExit?.call();
   }
 }

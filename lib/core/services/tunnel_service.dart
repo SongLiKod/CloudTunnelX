@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/log_entry.dart';
 import '../models/protocol_type.dart';
@@ -27,6 +28,8 @@ class TunnelService extends ChangeNotifier {
   final Map<String, bool> _userStop = {};
   final Map<String, List<TrafficPoint>> _trafficSeries = {};
   final Map<String, int> _prevBytes = {};
+  final Set<String> _metricsWarned = {};
+  final Set<String> _metricsLogged = {};
 
   /// 流量时序采样上限（5s 一次，约覆盖 10 分钟）
   static const int _maxSeriesPoints = 120;
@@ -285,6 +288,8 @@ class TunnelService extends ChangeNotifier {
     _upsertRuntime(id, (rt) {
       rt.status = TunnelStatus.stopped;
       rt.startedAt = null;
+      // 停止后旧链接失效，清空避免页面继续展示（临时隧道尤其明显）
+      rt.publicUrl = null;
     });
   }
 
@@ -294,7 +299,10 @@ class TunnelService extends ChangeNotifier {
     _metricTimers[c.id] = null;
 
     if (_userStop[c.id] == true) {
-      _upsertRuntime(c.id, (rt) => rt.status = TunnelStatus.stopped);
+      _upsertRuntime(c.id, (rt) {
+        rt.status = TunnelStatus.stopped;
+        rt.publicUrl = null; // 用户主动停止后旧链接失效
+      });
       return;
     }
 
@@ -305,6 +313,7 @@ class TunnelService extends ChangeNotifier {
       _upsertRuntime(c.id, (rt) {
         rt.status = TunnelStatus.reconnecting;
         rt.lastError = '进程退出(code=$code)，${delay}ms 后自动重连';
+        rt.publicUrl = null; // 断开期间旧链接失效，重连成功后再填
       });
       logs.log(
           tunnelId: c.id,
@@ -326,6 +335,7 @@ class TunnelService extends ChangeNotifier {
       rt.status = TunnelStatus.error;
       rt.lastError ??= '进程异常退出(code=$code)';
       rt.startedAt = null;
+      rt.publicUrl = null; // 异常退出后旧链接失效
     });
   }
 
@@ -373,12 +383,87 @@ class TunnelService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// `cloudflared tunnel login`（打开浏览器完成授权，等待 cert.pem 落盘）
-  Future<void> startLogin() async {
+  /// 进行中的浏览器授权进程（从输出流解析授权 URL）
+  Process? _loginProcess;
+  String? _loginUrl;
+
+  /// 最近一次登录授权链接（供页面兜底展示/复制）
+  String? get loginUrl => _loginUrl;
+
+  /// `cloudflared tunnel login`（浏览器授权，等待 cert.pem 落盘）
+  /// 不依赖内核自动打开浏览器：桌面端 detached 启动时经常无反应且输出被丢弃；
+  /// 统一改为内嵌运行并从输出流解析授权 URL，再用系统浏览器打开（否则界面无任何反应）。
+  /// 返回 (授权URL, 浏览器是否已打开)：两者皆可空，调用方据此兜底提示，避免静默失败。
+  Future<(String?, bool)> startLogin() async {
     final binary = binaries.binaryPath;
     if (binary == null) throw StateError('未找到 cloudflared 内核');
-    await Process.start(binary, ['tunnel', 'login'],
-        mode: ProcessStartMode.detached);
+    // 已有登录流程进行中：返回其 URL 与打开结果，避免重复启动进程
+    if (_loginProcess != null) {
+      return (_loginUrl, true);
+    }
+    final process = await Process.start(
+      binary,
+      ['tunnel', 'login'],
+      // Android 无系统证书路径：注入内置 Mozilla CA，否则登录后获取凭证报证书错误
+      environment: Platform.isAndroid
+          ? {...Platform.environment, 'SSL_CERT_FILE': await binaries.ensureCaBundle()}
+          : null,
+    );
+    _loginProcess = process;
+    // 累积输出再匹配：授权 URL 可能被拆到多个 chunk，逐块匹配会漏掉
+    var buf = '';
+    final result = Completer<(String?, bool)>();
+    void onData(String chunk) {
+      buf += chunk;
+      final m = RegExp(
+              r'https://dash\.cloudflare\.com/argotunnel\?callback=[^\s]+')
+          .firstMatch(buf);
+      if (m != null && !result.isCompleted) {
+        final url = m.group(0)!;
+        _loginUrl = url;
+        // 打开授权页；用户完成授权后内核自动写 ~/.cloudflared/cert.pem 并退出
+        _openLoginUrl(url).then((ok) {
+          if (!result.isCompleted) result.complete((url, ok));
+        });
+      }
+    }
+
+    process.stdout.transform(utf8.decoder).listen(onData);
+    process.stderr.transform(utf8.decoder).listen(onData);
+    process.exitCode.then((_) {
+      if (identical(_loginProcess, process)) _loginProcess = null;
+      // 进程在输出出完整 URL 前退出（如排队失败/网络异常）：
+      // 稍等流数据排空后提前收尾，避免页面干等 20 秒超时
+      Future.delayed(const Duration(milliseconds: 800), () {
+        if (!result.isCompleted) result.complete((_loginUrl, false));
+      });
+    });
+    try {
+      return await result.future.timeout(const Duration(seconds: 20));
+    } on TimeoutException {
+      return (_loginUrl, false);
+    }
+  }
+
+  /// 用系统浏览器打开授权页；失败返回 false（由页面兜底展示链接）
+  Future<bool> _openLoginUrl(String url) async {
+    try {
+      await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 终止进行中的浏览器授权进程（授权完成/取消后调用，释放后台进程）
+  Future<void> stopLogin() async {
+    final p = _loginProcess;
+    _loginProcess = null;
+    if (p != null) {
+      try {
+        p.kill();
+      } catch (_) {}
+    }
   }
 
   // ---------- metrics 流量统计（需求 3.1 在线时长/流量简要统计） ----------
@@ -391,8 +476,33 @@ class TunnelService extends ChangeNotifier {
         final res = await http
             .get(Uri.parse('http://127.0.0.1:$port/metrics'))
             .timeout(const Duration(seconds: 3));
-        if (res.statusCode == 200) _parseMetrics(id, res.body);
-      } catch (_) {}
+        if (res.statusCode == 200) {
+          _parseMetrics(id, res.body);
+          // 首次轮询成功记一次摘要日志：若解析结果与预期不符（如计数为 0），
+          // 直接看该条日志即可判断是内核口径还是解析问题
+          if (_metricsLogged.add(id)) {
+            final c = _configs[id];
+            logs.log(
+                tunnelId: id,
+                tunnelName: c?.name ?? '',
+                protocol: c?.protocol,
+                level: LogLevel.info,
+                message: 'metrics 接口正常（${res.body.split('\n').length} 行指标）');
+          }
+        }
+      } catch (e) {
+        // 静默失败会让人以为统计功能故障：每个隧道只告警一次。
+        // 常见原因：Android 未允许明文流量（usesCleartextTraffic）或内核 metrics 未监听。
+        if (_metricsWarned.add(id)) {
+          final c = _configs[id];
+          logs.log(
+              tunnelId: id,
+              tunnelName: c?.name ?? '',
+              protocol: c?.protocol,
+              level: LogLevel.warn,
+              message: 'metrics 统计接口不可达（流量曲线/统计将不可用）：$e');
+        }
+      }
     });
   }
 
@@ -404,11 +514,21 @@ class TunnelService extends ChangeNotifier {
       if (line.isEmpty || line.startsWith('#')) continue;
       final parts = line.split(RegExp(r'\s+'));
       if (parts.length < 2) continue;
-      final value = int.tryParse(parts.last);
+      // 用 num 解析：Prometheus 浮点值（如内存类指标 1.2e+06）用 int.tryParse 会失败
+      final value = num.tryParse(parts.last);
       if (value == null) continue;
       final name = parts.first.split('{').first;
-      if (name.contains('requests')) requests += value;
-      if (name.contains('bytes')) bytes += value;
+      // 请求数：只认累计计数器 total_requests（新版/旧版通用），
+      // 避免 concurrent/per_tunnel 等瞬时量把请求数翻倍
+      if (name.contains('total_requests')) requests += value.toInt();
+      // 流量字节：仅累计隧道实际传输字节（QUIC client / 旧版 muxer 压缩字节），
+      // 排除 go_memstats_*、process_* 等内存字节，否则"流量"会虚高畸变
+      if (name.contains('bytes') &&
+          !name.contains('compressed') &&
+          !name.startsWith('go_') &&
+          !name.startsWith('process_')) {
+        bytes += value.toInt();
+      }
     }
     if (requests > 0 || bytes > 0) {
       _upsertRuntime(id, (rt) {

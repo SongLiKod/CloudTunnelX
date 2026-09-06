@@ -15,6 +15,7 @@ import '../models/protocol_type.dart';
 import '../models/tunnel_config.dart';
 import '../models/tunnel_status.dart';
 import '../../android_service.dart';
+import '../../windows_badge.dart';
 import 'app_updater.dart';
 import 'binary_manager.dart';
 import 'cloudflare_service.dart';
@@ -41,6 +42,14 @@ class AppController extends ChangeNotifier {
     _themeMode = mode;
     repo.setSetting('theme_mode', mode.name);
     notifyListeners();
+  }
+
+  /// 设置自定义内核目录（null 恢复默认：软件目录下 bin 插件目录），
+  /// 持久化后立即重新检测内核是否位于新目录。
+  Future<void> setKernelBinDir(String? path) async {
+    binaries.setCustomBinDir(path);
+    await repo.setSetting('kernel_bin_dir', path);
+    await binaries.resolveBinary();
   }
 
   /// 历史单 Token 存储键（迁移为默认账号前使用）
@@ -76,11 +85,15 @@ class AppController extends ChangeNotifier {
     binaries.addListener(notifyListeners);
     repo.addListener(notifyListeners);
     cf.addListener(notifyListeners);
-    // Android：隧道运行状态联动前台服务通知（技术文档 5.2.1）
-    if (!kIsWeb && Platform.isAndroid) {
+    // 隧道运行状态联动：Android 前台服务通知/桌面图标徽标、Windows 任务栏角标
+    if (!kIsWeb) {
       tunnels.addListener(_syncForegroundService);
-      FlutterForegroundTask.addTaskDataCallback(_onTaskData);
+      if (Platform.isAndroid) {
+        FlutterForegroundTask.addTaskDataCallback(_onTaskData);
+      }
     }
+    // 加载自定义内核目录偏好（默认：软件目录下 bin 插件目录）
+    binaries.setCustomBinDir(repo.getSetting<String>('kernel_bin_dir'));
     // 恢复外观主题偏好（默认跟随系统）
     final savedTheme = repo.getSetting<String>('theme_mode');
     if (savedTheme != null) {
@@ -273,6 +286,10 @@ class AppController extends ChangeNotifier {
       tunnels.runningCount,
       disconnectedCount: disconnected,
     );
+    // 启动器图标徽标：数字 = 运行中隧道数量（退出全部隧道后自动移除）
+    updateLauncherBadge(tunnels.runningCount);
+    // Windows 任务栏角标：数字 = 运行中隧道数量（任务栏有按钮时可见）
+    updateWindowsTaskbarBadge(tunnels.runningCount);
   }
 
   void _onTaskData(Object data) {

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 共享路径：允许系统安装器读取应用缓存目录中的更新包 -->
+<paths>
+    <cache-path name="cache" path="." />
+</paths>

@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 /// Android 前台服务保活（技术文档 5.2.1）：隧道运行期间常驻通知，避免系统查杀
@@ -84,8 +85,8 @@ Future<void> updateForegroundService(int runningCount,
   final text = !running
       ? '隧道未运行'
       : (disconnectedCount > 0
-          ? '共 $running 条隧道运行中，$disconnectedCount 条断线重连'
-          : '共 $running 条隧道正在穿透，保持后台连接');
+          ? '共 $runningCount 条隧道运行中，$disconnectedCount 条断线重连'
+          : '共 $runningCount 条隧道正在穿透，保持后台连接');
   try {
     if (running) {
       if (await FlutterForegroundTask.isRunningService) {
@@ -112,5 +113,23 @@ Future<void> updateForegroundService(int runningCount,
     }
   } catch (_) {
     // 前台服务异常不影响隧道功能
+  }
+}
+
+/// 桌面图标徽标缓存：避免重复设置相同数字
+int? _lastBadgeCount;
+const _badgeChannel = MethodChannel('com.cloudtunnelx/native');
+
+/// 同步启动器图标徽标（数字 = 运行中的隧道数量）。
+/// 原生端通过「携带 setNumber 的静默通知」驱动桌面图标数字
+/// （Pixel/部分原生系统 Android 13+ 仅显示通知点，数字徽标可能被忽略）。失败静默。
+Future<void> updateLauncherBadge(int runningCount) async {
+  if (!Platform.isAndroid) return;
+  if (_lastBadgeCount == runningCount) return;
+  _lastBadgeCount = runningCount;
+  try {
+    await _badgeChannel.invokeMethod('launcherBadge', {'count': runningCount});
+  } catch (_) {
+    // 该 ROM/系统不支持数字徽标时静默忽略
   }
 }

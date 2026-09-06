@@ -861,6 +861,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "7.0.1"
+  xue_hua_app_badge:
+    dependency: "direct main"
+    description:
+      name: xue_hua_app_badge
+      sha256: ff39817a55755bf2b3726a571b9fa4b15460e19d72cfd75ae420bde1859a59f0
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.0.1"
   yaml:
     dependency: transitive
     description:
