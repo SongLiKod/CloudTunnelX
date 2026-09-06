@@ -174,11 +174,13 @@ class TunnelService extends ChangeNotifier {
     _metricPorts[c.id] = metricsPort;
 
     try {
+      final env = Map<String, String>.from(Platform.environment)
+        ..['NO_COLOR'] = '1';
       final p = await Process.start(
         binary,
         buildRunArgs(c, metricsPort),
         runInShell: false,
-        environment: {'NO_COLOR': '1'},
+        environment: env,
       );
       _processes[c.id] = p;
 
