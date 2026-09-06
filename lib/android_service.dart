@@ -85,8 +85,8 @@ Future<void> updateForegroundService(int runningCount,
   final text = !running
       ? '隧道未运行'
       : (disconnectedCount > 0
-          ? '共 $running 条隧道运行中，$disconnectedCount 条断线重连'
-          : '共 $running 条隧道正在穿透，保持后台连接');
+          ? '共 $runningCount 条隧道运行中，$disconnectedCount 条断线重连'
+          : '共 $runningCount 条隧道正在穿透，保持后台连接');
   try {
     if (running) {
       if (await FlutterForegroundTask.isRunningService) {
@@ -116,13 +116,13 @@ Future<void> updateForegroundService(int runningCount,
   }
 }
 
-/// 桌面图标徽标缓存：避免重复广播相同数字
+/// 桌面图标徽标缓存：避免重复设置相同数字
 int? _lastBadgeCount;
 const _badgeChannel = MethodChannel('com.cloudtunnelx/native');
 
 /// 同步启动器图标徽标（数字 = 运行中的隧道数量）。
-/// 原生端经 ShortcutBadger 广播适配各厂商 ROM（Pixel/部分原生系统
-/// Android 13+ 仅显示通知点，数字徽标可能被忽略）。失败静默。
+/// 原生端通过「携带 setNumber 的静默通知」驱动桌面图标数字
+/// （Pixel/部分原生系统 Android 13+ 仅显示通知点，数字徽标可能被忽略）。失败静默。
 Future<void> updateLauncherBadge(int runningCount) async {
   if (!Platform.isAndroid) return;
   if (_lastBadgeCount == runningCount) return;

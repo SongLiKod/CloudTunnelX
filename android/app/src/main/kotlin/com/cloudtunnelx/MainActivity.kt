@@ -1,5 +1,9 @@
 package com.cloudtunnelx
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -27,19 +31,55 @@ class MainActivity : FlutterActivity() {
             }
     }
 
-    /** 启动器图标数字徽标：count=0 移除，否则显示运行中的隧道数量 */
+    /** 启动器图标数字徽标：count<=0 移除；否则通过一条携带 setNumber 的静默通知展示数量。
+     *  说明：ShortcutBadger 已停更且在 Android 8.0+ 上不创建通知渠道，数字徽标永远不显示；
+     *  改用系统标准的「通知数字徽标」机制（各厂商图标数字实现均基于通知 number）。 */
     private fun setLauncherBadge(count: Int, result: MethodChannel.Result) {
         try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            // Android 8.0 起强制要求通知渠道，未创建渠道的通知会被系统直接丢弃
+            createBadgeChannel()
             if (count > 0) {
-                me.leolin.shortcutbadger.ShortcutBadger.applyCount(this, count)
+                val label = applicationInfo.loadLabel(packageManager).toString()
+                val notification = Notification.Builder(this, BADGE_CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_stat_tunnel)
+                    .setContentTitle(label)
+                    .setContentText("$count 条隧道正在穿透")
+                    .setNumber(count)
+                    .setShowBadge(true)
+                    .setSilent(true)
+                    .build()
+                nm.notify(BADGE_NOTIFICATION_ID, notification)
             } else {
-                me.leolin.shortcutbadger.ShortcutBadger.removeCount(this)
+                nm.cancel(BADGE_NOTIFICATION_ID)
             }
             result.success(true)
         } catch (e: Exception) {
             // 该 ROM/系统（如 Pixel Android 13+ 仅显示通知点）不支持时静默
             result.success(false)
         }
+    }
+
+    private fun createBadgeChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (nm.getNotificationChannel(BADGE_CHANNEL_ID) != null) return
+        val channel = NotificationChannel(
+            BADGE_CHANNEL_ID,
+            "隧道数量徽标",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "用于在桌面图标上显示运行中的隧道数量"
+            setShowBadge(true)
+            enableVibration(false)
+            setSound(null, null)
+        }
+        nm.createNotificationChannel(channel)
+    }
+
+    companion object {
+        private const val BADGE_CHANNEL_ID = "cloudtunnelx_badge"
+        private const val BADGE_NOTIFICATION_ID = 0xBAD6
     }
 
     /** 应用内更新：调起系统安装器安装更新 APK（先经 FileProvider 共享给安装器） */

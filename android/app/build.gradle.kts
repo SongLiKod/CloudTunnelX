@@ -47,8 +47,8 @@ kotlin {
 }
 
 dependencies {
-    // 桌面图标数字徽标（各厂商 ROM 的广播适配），替代已停更的 flutter_app_badger 插件
-    implementation("me.leolin:ShortcutBadger:1.1.22@aar")
+    // 桌面图标数字徽标：ShortcutBadger 已停更且 Android 8.0+ 不显示，
+    // 现由 MainActivity 通过「setNumber 静默通知」原生实现（不依赖第三方库）
 }
 
 flutter {
