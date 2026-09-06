@@ -138,6 +138,68 @@ class _SettingsPageState extends State<SettingsPage> {
                 child: const Text('检查更新'),
               ),
             ]),
+            if (!isAndroid) ...[
+              const SizedBox(height: 8),
+              const Divider(height: 1),
+              const SizedBox(height: 10),
+              Row(children: [
+                const Icon(Icons.folder_rounded, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('内核安装目录',
+                          style: Theme.of(context).textTheme.titleSmall),
+                      const SizedBox(height: 2),
+                      Text(
+                        bm.customBinDir != null
+                            ? '自定义：${bm.customBinDir}'
+                            : '默认：软件目录${Platform.pathSeparator}bin（插件目录）\n软件目录不可写时自动回退到 AppData 支持目录',
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodySmall
+                            ?.copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant),
+                      ),
+                    ],
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 10),
+              Wrap(spacing: 10, children: [
+                FilledButton.tonalIcon(
+                  onPressed: () async {
+                    final dir = await FilePicker.getDirectoryPath(
+                      dialogTitle: '选择 cloudflared 内核安装目录',
+                    );
+                    if (dir == null || dir.isEmpty) return;
+                    await app.setKernelBinDir(dir);
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                          content: Text(bm.ready
+                              ? '内核目录已更新，已识别 ${bm.version ?? ''}'
+                              : '内核目录已更新，但未找到 cloudflared，可点「重新检测」或「一键下载」')));
+                    }
+                  },
+                  icon: const Icon(Icons.create_new_folder_rounded, size: 16),
+                  label: const Text('选择自定义目录'),
+                ),
+                if (bm.customBinDir != null)
+                  TextButton(
+                    onPressed: () async {
+                      await app.setKernelBinDir(null);
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('已恢复默认内核目录')));
+                      }
+                    },
+                    child: const Text('恢复默认'),
+                  ),
+              ]),
+            ],
             if (isAndroid) ...[
               const SizedBox(height: 8),
               // Android 10+ W^X 策略：内核只能内置，展示如何获取/更换内置内核

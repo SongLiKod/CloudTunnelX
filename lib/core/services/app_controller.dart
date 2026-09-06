@@ -44,6 +44,14 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 设置自定义内核目录（null 恢复默认：软件目录下 bin 插件目录），
+  /// 持久化后立即重新检测内核是否位于新目录。
+  Future<void> setKernelBinDir(String? path) async {
+    binaries.setCustomBinDir(path);
+    await repo.setSetting('kernel_bin_dir', path);
+    await binaries.resolveBinary();
+  }
+
   /// 历史单 Token 存储键（迁移为默认账号前使用）
   static const _cfTokenKey = 'cf_api_token';
 
@@ -84,6 +92,8 @@ class AppController extends ChangeNotifier {
         FlutterForegroundTask.addTaskDataCallback(_onTaskData);
       }
     }
+    // 加载自定义内核目录偏好（默认：软件目录下 bin 插件目录）
+    binaries.setCustomBinDir(repo.getSetting<String>('kernel_bin_dir'));
     // 恢复外观主题偏好（默认跟随系统）
     final savedTheme = repo.getSetting<String>('theme_mode');
     if (savedTheme != null) {
