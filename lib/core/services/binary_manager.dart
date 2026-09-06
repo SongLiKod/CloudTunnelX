@@ -55,6 +55,20 @@ class BinaryManager extends ChangeNotifier {
     return Directory('$home/.cloudflared');
   }
 
+  /// Android 无系统证书路径（/etc/ssl/certs 不存在），Go 程序 TLS 校验会报
+  /// "certificate signed by unknown authority"。从应用内置资源释放 Mozilla
+  /// CA 根证书包，启动内核时通过 SSL_CERT_FILE 环境变量注入。
+  Future<String> ensureCaBundle() async {
+    final support = await binDir();
+    final file = File(
+        '${support.parent.path}${Platform.pathSeparator}cacert.pem');
+    if (!file.existsSync()) {
+      final bytes = await rootBundle.load('assets/cacert.pem');
+      await file.writeAsBytes(bytes.buffer.asUint8List());
+    }
+    return file.path;
+  }
+
   Future<String?> resolveBinary() async {
     final exeName = Platform.isWindows ? 'cloudflared.exe' : 'cloudflared';
 

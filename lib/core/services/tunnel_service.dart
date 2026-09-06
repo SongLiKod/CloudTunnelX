@@ -176,6 +176,12 @@ class TunnelService extends ChangeNotifier {
     try {
       final env = Map<String, String>.from(Platform.environment)
         ..['NO_COLOR'] = '1';
+      if (Platform.isAndroid) {
+        // Android 没有系统证书路径，注入内置 Mozilla CA 证书包，
+        // 否则内核连 trycloudflare.com / Cloudflare API 时 TLS 报
+        // "certificate signed by unknown authority"
+        env['SSL_CERT_FILE'] = await binaries.ensureCaBundle();
+      }
       final p = await Process.start(
         binary,
         buildRunArgs(c, metricsPort),
