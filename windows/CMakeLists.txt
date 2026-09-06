@@ -52,8 +52,10 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 # === 应用版本：从 pubspec.yaml 读取，供 Runner.rc 嵌入 exe 版本资源 ===
 # 若不定义 FLUTTER_VERSION_*，Runner.rc 回退为 1.0.0：升级包替换 exe 后
 # 版本号仍显示旧值（package_info_plus 读的是 exe 资源），表现为"升级后还是旧版本"。
+# 注意：CMake string(REGEX MATCH) 的 ^ 只匹配整个输入串的开头，不会匹配行首，
+# 所以这里不能加 ^ 锚点，否则读到的全文（首行是 name:）匹配失败会回退成 1.0.0。
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../pubspec.yaml" PUBSPEC_YAML)
-string(REGEX MATCH "^version:[ \t]*([0-9]+\\.[0-9]+\\.[0-9]+)" PUBSPEC_VERSION_MATCH "${PUBSPEC_YAML}")
+string(REGEX MATCH "version:[ \t]*([0-9]+\\.[0-9]+\\.[0-9]+)" PUBSPEC_VERSION_MATCH "${PUBSPEC_YAML}")
 if(CMAKE_MATCH_1)
   set(FLUTTER_VERSION "${CMAKE_MATCH_1}")
 else()

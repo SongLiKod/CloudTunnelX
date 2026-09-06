@@ -20,6 +20,7 @@ class AppUpdater extends ChangeNotifier {
 
   String? _currentVersion;
   String? _latestVersion;
+  String? _latestTag;
   String? _releaseNotes;
   String? _error;
   bool _checking = false;
@@ -70,9 +71,14 @@ class AppUpdater extends ChangeNotifier {
         throw HttpException('HTTP ${res.statusCode}');
       }
       final j = jsonDecode(res.body) as Map<String, dynamic>;
-      final tag = ((j['tag_name'] as String?) ?? '').replaceFirst(RegExp(r'^v'), '');
-      // 注意取 group(0) 完整匹配；带量词的重复捕获组只保留最后一段（如 ".0"）
-      final m = RegExp(r'\d{1,3}(?:\.\d{1,3}){1,2}').firstMatch(tag);
+      // 完整标签（如 v2.0.4-beta）须原样保留：发布资源名按 tag 命名，
+      // 若剥掉后缀拼 URL 会 404（比如请求 v2.0.4 实际资源是 v2.0.4-beta）。
+      final tag = ((j['tag_name'] as String?) ?? '').trim();
+      if (tag.isEmpty) throw const FormatException('无法解析发布标签');
+      _latestTag = tag;
+      // 比较/展示用纯数字版本号：注意取 group(0) 完整匹配；带量词的重复捕获组只保留最后一段（如 ".0"）
+      final m = RegExp(r'\d{1,3}(?:\.\d{1,3}){1,2}')
+          .firstMatch(tag.replaceFirst(RegExp(r'^v'), ''));
       if (m == null) throw const FormatException('无法解析发布版本号');
       _latestVersion = m.group(0);
       final body = ((j['body'] as String?) ?? '').trim();
@@ -91,15 +97,17 @@ class AppUpdater extends ChangeNotifier {
   Future<void> downloadAndInstall({VoidCallback? onExit}) async {
     final latest = _latestVersion;
     if (latest == null) throw StateError('暂无可用版本信息，请先检查更新');
+    // 下载拼接用完整 tag（含 v 前缀与 -beta 等后缀），与 GitHub 资源命名保持一致
+    final releaseTag = _latestTag ?? 'v$latest';
 
     if (Platform.isAndroid) {
       // 下载到应用缓存目录（原生端 FileProvider 映射该目录）
       final cacheDir = await getTemporaryDirectory();
       final apkPath =
-          '${cacheDir.path}${Platform.pathSeparator}cloudtunnelx-v$latest.apk';
+          '${cacheDir.path}${Platform.pathSeparator}cloudtunnelx-$releaseTag.apk';
       await _downloadToFile(
-        'https://github.com/$_repo/releases/download/v$latest/'
-        'cloudtunnelx-android-v$latest.apk',
+        'https://github.com/$_repo/releases/download/$releaseTag/'
+        'cloudtunnelx-android-$releaseTag.apk',
         apkPath,
       );
       // 调起系统安装器前先做签名预检：CI 未配置稳定签名密钥时，各次构建签名不同，
@@ -127,10 +135,10 @@ class AppUpdater extends ChangeNotifier {
     final updDir = Directory('${base.path}${Platform.pathSeparator}updates');
     if (!updDir.existsSync()) updDir.createSync(recursive: true);
     final zipPath =
-        '${updDir.path}${Platform.pathSeparator}cloudtunnelx-windows-v$latest.zip';
+        '${updDir.path}${Platform.pathSeparator}cloudtunnelx-$releaseTag.zip';
     await _downloadToFile(
-      'https://github.com/$_repo/releases/download/v$latest/'
-      'cloudtunnelx-windows-v$latest.zip',
+      'https://github.com/$_repo/releases/download/$releaseTag/'
+      'cloudtunnelx-windows-$releaseTag.zip',
       zipPath,
     );
 
