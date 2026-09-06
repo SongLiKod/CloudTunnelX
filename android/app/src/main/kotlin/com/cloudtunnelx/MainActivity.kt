@@ -46,7 +46,6 @@ class MainActivity : FlutterActivity() {
                     .setContentTitle(label)
                     .setContentText("$count 条隧道正在穿透")
                     .setNumber(count)
-                    .setSilent(true)
                     .build()
                 nm.notify(BADGE_NOTIFICATION_ID, notification)
             } else {
